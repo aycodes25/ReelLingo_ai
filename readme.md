@@ -167,3 +167,59 @@ ReelLingo/
 │
 ├── docker-compose.yml              # optional: run frontend+backend together
 └── README.md                       # updated setup instructions (Supabase project creation steps)
+
+---
+
+## 🚀 Getting Started (Local Development)
+
+### Prerequisites
+- Node.js 20+
+- Python 3.11+
+- FFmpeg installed and on your `PATH` (confirm with `ffmpeg -version`)
+- A free [Supabase](https://supabase.com) account
+- Docker Desktop (optional, only needed for the Docker Compose path below)
+
+### 1. Create your Supabase project
+1. Go to [supabase.com](https://supabase.com) and sign up / log in.
+2. Click **New Project**, pick a name and a database password (save the password), and wait for
+   provisioning to finish.
+3. In **Project Settings → API**, copy the **Project URL** and the **anon public** key (or the
+   **service_role** key if you want the backend to bypass Row Level Security during development).
+4. In **Project Settings → Database**, copy the **Connection string** (URI format) — this is your
+   `DATABASE_URL`.
+5. In **Storage**, create a new bucket named `reellingo-videos`.
+
+### 2. Backend setup
+```bash
+cd backend
+cp .env.example .env
+# Edit .env: paste in DATABASE_URL, SUPABASE_URL, SUPABASE_KEY from the Supabase dashboard.
+# Leave MOCK_MODE=true and the OPENAI/DEEPL/ELEVENLABS keys blank until you have them.
+python -m venv .venv
+.venv/Scripts/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+Backend runs at `http://localhost:8000` (check `http://localhost:8000/health`).
+
+### 3. Frontend setup
+```bash
+cd frontend
+cp .env.local.example .env.local
+npm install
+npm run dev
+```
+Frontend runs at `http://localhost:3000`.
+
+### 4. Or run both with Docker Compose
+```bash
+docker compose up
+```
+
+### Notes
+- With `MOCK_MODE=true` (the default), the full pipeline runs without any OpenAI/DeepL/ElevenLabs
+  keys — transcription, translation, and dubbing return placeholder data, while audio
+  extraction/merging and subtitle generation are real. Set `MOCK_MODE=false` and fill in the three
+  API keys in `backend/.env` once you have them to switch to real calls.
+- Paystack/Stripe checkout is not implemented yet — the pricing tiers are modeled in the database
+  but billing is a stub.
