@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.db import Base, engine
 from app import models  # noqa: F401  (registers models with Base)
-from app.routers import auth
+from app.routers import auth, jobs
 
 app = FastAPI(title="ReelLingo API")
 
@@ -26,3 +26,4 @@ def health():
 
 
 app.include_router(auth.router)
+app.include_router(jobs.router)
