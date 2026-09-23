@@ -135,38 +135,53 @@ ReelLingo is the first tool built **specifically for African-language creators**
 
 *Built with purpose. Built for Africa. Built for the world.*
 
+---
+
+## 🗂️ Project Structure
+
+```
 ReelLingo/
-├── frontend/                      # Next.js app
+├── frontend/                        # Next.js app (TypeScript, App Router, Tailwind)
 │   ├── app/
-│   │   ├── page.tsx               # Landing page (hero split-video, CTA)
-│   │   ├── dashboard/page.tsx     # Upload + language select + voice toggle
-│   │   ├── jobs/[id]/page.tsx     # Processing status page (live steps)
-│   │   └── result/[id]/page.tsx   # Result page (download video/SRT, share)
-│   ├── components/                # UploadDropzone, LanguagePicker, StatusTimeline, etc.
-│   └── lib/api.ts                 # typed client for backend endpoints
+│   │   ├── page.tsx                 # Landing page (hero, CTA)
+│   │   ├── dashboard/page.tsx       # Upload + language select + voice toggle
+│   │   ├── jobs/[id]/page.tsx       # Processing status page (live steps)
+│   │   ├── result/[id]/page.tsx     # Result page (download video/SRT)
+│   │   ├── layout.tsx
+│   │   └── globals.css
+│   ├── components/                  # UploadDropzone, LanguagePicker, VoiceToggle, StatusTimeline
+│   ├── lib/
+│   │   ├── api.ts                   # typed client for backend endpoints
+│   │   └── types.ts                 # shared Job/JobStatus types
+│   ├── package.json
+│   └── .env.local.example
 │
-├── backend/                       # FastAPI app
+├── backend/                         # FastAPI app (Python)
 │   ├── app/
-│   │   ├── main.py                # FastAPI entrypoint
+│   │   ├── main.py                  # FastAPI entrypoint, CORS, router registration
+│   │   ├── config.py                # env-driven settings (MOCK_MODE, Supabase, API keys)
+│   │   ├── db.py                    # SQLAlchemy engine/session (Supabase Postgres)
+│   │   ├── models.py                # Job, Subscription
+│   │   ├── security.py              # Supabase Auth bearer-token dependency
+│   │   ├── storage.py                # Supabase Storage upload/signed URLs
+│   │   ├── worker.py                # orchestrates pipeline stages, updates job status
 │   │   ├── routers/
-│   │   │   ├── jobs.py            # POST /jobs (upload), GET /jobs/{id}
-│   │   │   └── auth.py            # thin wrapper over Supabase Auth
-│   │   ├── pipeline/
-│   │   │   ├── extract_audio.py   # FFmpeg
-│   │   │   ├── transcribe.py      # Whisper adapter (mockable)
-│   │   │   ├── translate.py       # DeepL/GPT-4o adapter (mockable)
-│   │   │   ├── dub.py             # ElevenLabs adapter (mockable)
-│   │   │   ├── merge.py           # FFmpeg re-merge
-│   │   │   └── subtitles.py       # .SRT generation
-│   │   ├── worker.py              # runs pipeline steps as a background job, updates job status
-│   │   ├── models.py               # SQLAlchemy models (users, jobs, subscriptions)
-│   │   ├── db.py                  # Supabase Postgres connection
-│   │   └── storage.py             # Supabase Storage upload/download
+│   │   │   ├── jobs.py              # POST /jobs (upload), GET /jobs/{id}
+│   │   │   └── auth.py              # signup/login/logout (Supabase Auth)
+│   │   └── pipeline/
+│   │       ├── extract_audio.py     # FFmpeg (real)
+│   │       ├── merge.py             # FFmpeg (real)
+│   │       ├── transcribe.py        # Whisper adapter (mockable)
+│   │       ├── translate.py         # DeepL adapter (mockable)
+│   │       ├── dub.py               # ElevenLabs adapter (mockable)
+│   │       └── subtitles.py         # .SRT generation
+│   ├── tests/                       # pytest suite (mock-mode adapters, real-ffmpeg pipeline, API)
 │   ├── requirements.txt
 │   └── .env.example
 │
-├── docker-compose.yml              # optional: run frontend+backend together
-└── README.md                       # updated setup instructions (Supabase project creation steps)
+├── docker-compose.yml                # run frontend+backend together
+└── readme.md                         # this file
+```
 
 ---
 
