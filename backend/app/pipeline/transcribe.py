@@ -22,6 +22,6 @@ def transcribe(audio_path: str, source_language: str, mock_mode: bool) -> list[T
             response_format="verbose_json",
         )
     return [
-        {"start": segment["start"], "end": segment["end"], "text": segment["text"].strip()}
+        {"start": segment.start, "end": segment.end, "text": segment.text.strip()}
         for segment in response.segments
     ]
