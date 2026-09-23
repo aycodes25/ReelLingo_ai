@@ -27,7 +27,10 @@ def _client():
 
 @router.post("/signup", response_model=AuthResponse, status_code=201)
 def signup(payload: SignupRequest):
-    result = _client().auth.sign_up({"email": payload.email, "password": payload.password})
+    try:
+        result = _client().auth.sign_up({"email": payload.email, "password": payload.password})
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Signup failed") from exc
     if result.user is None or result.session is None:
         raise HTTPException(status_code=400, detail="Signup failed")
     return AuthResponse(user_id=result.user.id, access_token=result.session.access_token)
@@ -35,9 +38,12 @@ def signup(payload: SignupRequest):
 
 @router.post("/login", response_model=AuthResponse)
 def login(payload: LoginRequest):
-    result = _client().auth.sign_in_with_password(
-        {"email": payload.email, "password": payload.password}
-    )
+    try:
+        result = _client().auth.sign_in_with_password(
+            {"email": payload.email, "password": payload.password}
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid credentials") from exc
     if result.user is None or result.session is None:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     return AuthResponse(user_id=result.user.id, access_token=result.session.access_token)
