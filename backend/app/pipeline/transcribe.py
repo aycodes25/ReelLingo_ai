@@ -1,5 +1,5 @@
-import os
 from openai import OpenAI
+from app.config import settings
 from app.pipeline.types import TranscriptSegment
 
 
@@ -13,7 +13,9 @@ def transcribe(audio_path: str, source_language: str, mock_mode: bool) -> list[T
             }
         ]
 
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    if not settings.openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY is not set. Add it to backend/.env to use real transcription.")
+    client = OpenAI(api_key=settings.openai_api_key)
     with open(audio_path, "rb") as audio_file:
         response = client.audio.transcriptions.create(
             model="whisper-1",

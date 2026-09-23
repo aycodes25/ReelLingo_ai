@@ -1,5 +1,5 @@
-import os
 import deepl
+from app.config import settings
 from app.pipeline.types import TranscriptSegment
 
 
@@ -12,7 +12,9 @@ def translate(
             for segment in segments
         ]
 
-    translator = deepl.Translator(os.environ["DEEPL_API_KEY"])
+    if not settings.deepl_api_key:
+        raise RuntimeError("DEEPL_API_KEY is not set. Add it to backend/.env to use real translation.")
+    translator = deepl.Translator(settings.deepl_api_key)
     translated: list[TranscriptSegment] = []
     for segment in segments:
         result = translator.translate_text(segment["text"], target_lang=target_language)

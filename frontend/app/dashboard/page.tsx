@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import UploadDropzone from "@/components/UploadDropzone";
 import LanguagePicker from "@/components/LanguagePicker";
 import VoiceToggle from "@/components/VoiceToggle";
-import { createJob } from "@/lib/api";
+import { createJob, getStoredToken } from "@/lib/api";
 
 const SOURCE_LANGUAGES = [
   { code: "yo", label: "Yoruba", flag: "🇳🇬" },
@@ -27,6 +27,12 @@ export default function DashboardPage() {
   const [voiceClone, setVoiceClone] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!getStoredToken()) {
+      router.push("/login");
+    }
+  }, [router]);
 
   async function handleSubmit() {
     if (!file) {

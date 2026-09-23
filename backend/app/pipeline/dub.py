@@ -1,6 +1,6 @@
-import os
 import shutil
 from elevenlabs.client import ElevenLabs
+from app.config import settings
 from app.pipeline.types import TranscriptSegment
 
 
@@ -15,7 +15,9 @@ def dub(
         shutil.copyfile(source_audio_path, output_path)
         return output_path
 
-    client = ElevenLabs(api_key=os.environ["ELEVENLABS_API_KEY"])
+    if not settings.elevenlabs_api_key:
+        raise RuntimeError("ELEVENLABS_API_KEY is not set. Add it to backend/.env to use real dubbing.")
+    client = ElevenLabs(api_key=settings.elevenlabs_api_key)
     full_text = " ".join(segment["text"] for segment in segments)
     audio = client.text_to_speech.convert(voice_id=voice_id, text=full_text)
     with open(output_path, "wb") as f:
