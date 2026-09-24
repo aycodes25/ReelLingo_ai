@@ -1,0 +1,19 @@
+- main [ref=e2]:
+  - heading "Dashboard" [level=1] [ref=e3]
+  - paragraph [ref=e5] [cursor=pointer]: Drop your video here or click to browse
+  - generic [ref=e6]:
+    - paragraph [ref=e7]: Source language
+    - generic [ref=e8]:
+      - button "🇳🇬 Yoruba" [ref=e9] [cursor=pointer]
+      - button "🇳🇬 Pidgin" [ref=e10] [cursor=pointer]
+      - button "🇬🇭 Twi" [ref=e11] [cursor=pointer]
+  - generic [ref=e12]:
+    - paragraph [ref=e13]: Target language
+    - generic [ref=e14]:
+      - button "🇬🇧 English" [ref=e15] [cursor=pointer]
+      - button "🇪🇸 Spanish" [ref=e16] [cursor=pointer]
+      - button "🇫🇷 French" [ref=e17] [cursor=pointer]
+  - generic [ref=e18]:
+    - checkbox "Clone my exact voice (Recommended)" [checked] [ref=e19]
+    - generic [ref=e20]: Clone my exact voice (Recommended)
+  - button "Dub My Video" [ref=e21] [cursor=pointer]
