@@ -1,9 +1,10 @@
 const STEPS = [
   { key: "extracting_audio", label: "Extracting audio" },
   { key: "transcribing", label: "Transcribing" },
+  { key: "detecting_languages", label: "Listing spoken languages" },
   { key: "translating", label: "Translating" },
-  { key: "dubbing", label: "Synthesizing voice clone" },
-  { key: "merging", label: "Stitching it all together" },
+  { key: "dubbing", label: "Generating translated voice" },
+  { key: "merging", label: "Replacing the original audio" },
   { key: "generating_subtitles", label: "Generating subtitles" },
 ];
 
@@ -15,22 +16,20 @@ export default function StatusTimeline({ currentStep }: StatusTimelineProps) {
   const currentIndex = STEPS.findIndex((step) => step.key === currentStep);
 
   return (
-    <ul className="space-y-3">
+    <ol className="timeline">
       {STEPS.map((step, index) => {
         const isDone = currentIndex > index || currentStep === "done";
         const isActive = currentIndex === index;
         return (
           <li
             key={step.key}
-            className={`flex items-center gap-3 ${
-              isActive ? "text-violet-400" : isDone ? "text-emerald-400" : "text-gray-500"
-            }`}
+            className={`timeline-step ${isActive ? "is-active" : isDone ? "is-done" : ""}`}
           >
-            <span>{isDone ? "✅" : isActive ? "⏳" : "◯"}</span>
-            <span>{step.label}...</span>
+            <span className="timeline-marker" aria-hidden="true">{isDone ? "✓" : isActive ? "•" : ""}</span>
+            <span>{step.label}</span>
           </li>
         );
       })}
-    </ul>
+    </ol>
   );
 }

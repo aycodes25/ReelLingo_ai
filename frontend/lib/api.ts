@@ -1,8 +1,15 @@
-import type { Job } from "./types";
+import type { ApiHealth, Job, LanguageOption } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 const TOKEN_STORAGE_KEY = "reellingo_access_token";
+
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
 
 export function getStoredToken(): string | null {
   if (typeof window === "undefined") return null;
@@ -34,6 +41,17 @@ function authHeaders(): HeadersInit {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+async function throwResponseError(response: Response, context: string): Promise<never> {
+  let message = `${context} (${response.status})`;
+  try {
+    const body = await response.json();
+    message = body.detail || body.message || message;
+  } catch {
+    // Keep the status-based message when the response is not JSON.
+  }
+  throw new ApiError(message, response.status);
+}
+
 interface AuthResponse {
   user_id: string;
   access_token: string;
@@ -46,7 +64,7 @@ export async function login(email: string, password: string): Promise<AuthRespon
     body: JSON.stringify({ email, password }),
   });
   if (!response.ok) {
-    throw new Error(`Login failed: ${response.status}`);
+    await throwResponseError(response, "Login failed");
   }
   const data: AuthResponse = await response.json();
   setStoredToken(data.access_token);
@@ -60,7 +78,7 @@ export async function signup(email: string, password: string): Promise<AuthRespo
     body: JSON.stringify({ email, password }),
   });
   if (!response.ok) {
-    throw new Error(`Signup failed: ${response.status}`);
+    await throwResponseError(response, "Signup failed");
   }
   const data: AuthResponse = await response.json();
   setStoredToken(data.access_token);
@@ -86,7 +104,7 @@ export async function createJob(
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to create job: ${response.status}`);
+    await throwResponseError(response, "Failed to create job");
   }
 
   return response.json();
@@ -95,7 +113,25 @@ export async function createJob(
 export async function getJob(jobId: number): Promise<Job> {
   const response = await fetch(`${API_URL}/jobs/${jobId}`, { headers: authHeaders() });
   if (!response.ok) {
-    throw new Error(`Failed to fetch job: ${response.status}`);
+    await throwResponseError(response, "Failed to fetch job");
   }
+  return response.json();
+}
+
+export async function getJobs(): Promise<Job[]> {
+  const response = await fetch(`${API_URL}/jobs`, { headers: authHeaders() });
+  if (!response.ok) await throwResponseError(response, "Could not load projects");
+  return response.json();
+}
+
+export async function getLanguages(): Promise<LanguageOption[]> {
+  const response = await fetch(`${API_URL}/languages`);
+  if (!response.ok) await throwResponseError(response, "Could not load languages");
+  return response.json();
+}
+
+export async function getApiHealth(): Promise<ApiHealth> {
+  const response = await fetch(`${API_URL}/health`);
+  if (!response.ok) await throwResponseError(response, "Could not check API status");
   return response.json();
 }

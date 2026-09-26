@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, type DragEvent, type ChangeEvent } from "react";
+import { Check, UploadCloud, Video } from "lucide-react";
 
 interface UploadDropzoneProps {
   onFileSelected: (file: File) => void;
@@ -14,19 +15,18 @@ export default function UploadDropzone({ onFileSelected }: UploadDropzoneProps) 
   function handleDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
     setIsDragging(false);
-    const file = event.dataTransfer.files[0];
-    if (file) {
-      setFileName(file.name);
-      onFileSelected(file);
-    }
+    selectFile(event.dataTransfer.files[0]);
   }
 
   function handleChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (file) {
-      setFileName(file.name);
-      onFileSelected(file);
-    }
+    selectFile(event.target.files?.[0]);
+  }
+
+  function selectFile(file: File | undefined) {
+    if (!file) return;
+    if (!file.type.startsWith("video/")) return;
+    setFileName(file.name);
+    onFileSelected(file);
   }
 
   return (
@@ -37,13 +37,15 @@ export default function UploadDropzone({ onFileSelected }: UploadDropzoneProps) 
       }}
       onDragLeave={() => setIsDragging(false)}
       onDrop={handleDrop}
-      onClick={() => inputRef.current?.click()}
-      className={`cursor-pointer rounded-2xl border-2 border-dashed p-12 text-center transition-colors ${
-        isDragging ? "border-violet-500 bg-violet-500/10" : "border-gray-600"
-      }`}
+      className={`dropzone ${isDragging ? "is-dragging" : ""} ${fileName ? "has-file" : ""}`}
     >
-      <input ref={inputRef} type="file" accept="video/*" className="hidden" onChange={handleChange} />
-      <p className="text-gray-100">{fileName ?? "Drop your video here or click to browse"}</p>
+      <input ref={inputRef} type="file" accept="video/mp4,video/quicktime,video/x-msvideo" className="visually-hidden" onChange={handleChange} />
+      <button type="button" onClick={() => inputRef.current?.click()} className="dropzone-content" aria-label="Choose or drop a video file">
+        <span className="dropzone-icon">{fileName ? <Check size={22} /> : <UploadCloud size={22} />}</span>
+        <span className="dropzone-title">{fileName ?? "Drop your video here"}</span>
+        <span className="dropzone-subtitle">{fileName ? "Ready to translate" : "or browse your files · MP4, MOV, AVI"}</span>
+        <span className="dropzone-meta"><Video size={15} /> Up to 2 GB · choose a video under your plan limit</span>
+      </button>
     </div>
   );
 }

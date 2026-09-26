@@ -1,8 +1,4 @@
-interface LanguageOption {
-  code: string;
-  label: string;
-  flag: string;
-}
+import type { LanguageOption } from "@/lib/types";
 
 interface LanguagePickerProps {
   label: string;
@@ -12,25 +8,26 @@ interface LanguagePickerProps {
 }
 
 export default function LanguagePicker({ label, options, value, onChange }: LanguagePickerProps) {
+  const groups = Array.from(new Set(options.map((option) => option.group)));
   return (
-    <div>
-      <p className="mb-2 text-sm text-gray-400">{label}</p>
-      <div className="flex flex-wrap gap-2">
-        {options.map((option) => (
-          <button
-            key={option.code}
-            type="button"
-            onClick={() => onChange(option.code)}
-            className={`rounded-full border px-4 py-2 text-sm ${
-              value === option.code
-                ? "border-violet-500 bg-violet-500/20 text-white"
-                : "border-gray-700 text-gray-300"
-            }`}
-          >
-            {option.flag} {option.label}
-          </button>
+    <label className="language-field">
+      <span className="field-label">{label}</span>
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        {groups.map((group) => (
+          <optgroup key={group} label={group}>
+            {options.filter((option) => option.group === group).map((option) => (
+              <option key={option.code} value={option.code}>
+                {option.name} · {option.region}
+              </option>
+            ))}
+          </optgroup>
         ))}
-      </div>
-    </div>
+      </select>
+      <span className="field-flag" aria-hidden="true">{flagEmoji(options.find((option) => option.code === value)?.flag || "NG")}</span>
+    </label>
   );
+}
+
+function flagEmoji(countryCode: string): string {
+  return String.fromCodePoint(...countryCode.toUpperCase().split("").map((letter) => 127397 + letter.charCodeAt(0)));
 }
