@@ -92,6 +92,8 @@ export async function initializeDatabase() {
       ALTER TABLE jobs ADD COLUMN IF NOT EXISTS translated_segments_json TEXT;
       ALTER TABLE jobs ADD COLUMN IF NOT EXISTS detected_languages_json TEXT;
       ALTER TABLE jobs ADD COLUMN IF NOT EXISTS duration_seconds DOUBLE PRECISION;
+      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS original_filename TEXT;
+      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS processing_note TEXT;
     `);
     return;
   }
@@ -140,6 +142,8 @@ export async function initializeDatabase() {
     ["translated_segments_json", "TEXT"],
     ["detected_languages_json", "TEXT"],
     ["duration_seconds", "REAL"],
+    ["original_filename", "TEXT"],
+    ["processing_note", "TEXT"],
   ];
   for (const [name, type] of newColumns) {
     if (!columns.has(name)) sqlite.exec(`ALTER TABLE jobs ADD COLUMN ${name} ${type}`);
@@ -153,16 +157,16 @@ export async function getJob(id) {
 }
 
 export async function createJob(job) {
-  const values = [job.user_id, job.source_language, job.target_language, job.voice_clone, job.input_storage_path];
+  const values = [job.user_id, job.source_language, job.target_language, job.voice_clone, job.input_storage_path, job.original_filename || null];
   if (isPostgres) {
     const result = await pool.query(
-      "INSERT INTO jobs (user_id, status, current_step, source_language, target_language, voice_clone, input_storage_path) VALUES ($1, 'queued', 'queued', $2, $3, $4, $5) RETURNING *",
+      "INSERT INTO jobs (user_id, status, current_step, source_language, target_language, voice_clone, input_storage_path, original_filename) VALUES ($1, 'queued', 'queued', $2, $3, $4, $5, $6) RETURNING *",
       values,
     );
     return normalizeJob(result.rows[0]);
   }
   const result = sqliteRun(
-    "INSERT INTO jobs (user_id, status, current_step, source_language, target_language, voice_clone, input_storage_path) VALUES (?, 'queued', 'queued', ?, ?, ?, ?)",
+    "INSERT INTO jobs (user_id, status, current_step, source_language, target_language, voice_clone, input_storage_path, original_filename) VALUES (?, 'queued', 'queued', ?, ?, ?, ?, ?)",
     values,
   );
   return getJob(result.id);
@@ -172,6 +176,7 @@ export async function updateJob(id, changes) {
   const allowedFields = new Set([
     "status", "current_step", "output_video_path", "output_srt_path", "error_message",
     "transcript_json", "translated_segments_json", "detected_languages_json", "duration_seconds",
+    "voice_clone", "processing_note",
   ]);
   const entries = Object.entries(changes).filter(([key]) => allowedFields.has(key));
   if (entries.length === 0) return getJob(id);
@@ -195,6 +200,30 @@ export async function listJobs(userId, limit = 10) {
     return (await pool.query("SELECT * FROM jobs WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2", [userId, limit])).rows.map(normalizeJob);
   }
   return sqliteMany("SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?", [userId, limit]).map(normalizeJob);
+}
+
+export async function getMonthlyUsage(userId) {
+  const row = isPostgres
+    ? (await pool.query(
+      "SELECT COUNT(*) AS videos, COALESCE(SUM(duration_seconds), 0) AS seconds FROM jobs WHERE user_id = $1 AND status <> 'failed' AND created_at >= date_trunc('month', CURRENT_TIMESTAMP)",
+      [userId],
+    )).rows[0]
+    : sqliteOne(
+      "SELECT COUNT(*) AS videos, COALESCE(SUM(duration_seconds), 0) AS seconds FROM jobs WHERE user_id = ? AND status <> 'failed' AND created_at >= date('now', 'start of month')",
+      [userId],
+    );
+  return { videos: Number(row?.videos || 0), seconds: Number(row?.seconds || 0) };
+}
+
+// A job's pipeline runs inside the API process, so a restart leaves unfinished jobs orphaned.
+export async function failInterruptedJobs() {
+  const message = "Processing was interrupted because the server restarted. Please upload the video again.";
+  if (isPostgres) {
+    return (await pool.query("UPDATE jobs SET status = 'failed', error_message = $1 WHERE status IN ('queued', 'processing')", [message])).rowCount;
+  }
+  const count = Number(sqliteOne("SELECT COUNT(*) AS count FROM jobs WHERE status IN ('queued', 'processing')")?.count || 0);
+  if (count) sqliteRun("UPDATE jobs SET status = 'failed', error_message = ? WHERE status IN ('queued', 'processing')", [message]);
+  return count;
 }
 
 export function closeDatabase() {

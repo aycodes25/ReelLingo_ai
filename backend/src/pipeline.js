@@ -1,14 +1,15 @@
 import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import OpenAI from "openai";
 import { config } from "./config.js";
 import { updateJob } from "./database.js";
-import { getLanguage } from "./languages.js";
-import { languages } from "./languages.js";
+import { getLanguage, languages } from "./languages.js";
 import { uploadBuffer, uploadFile } from "./storage.js";
+import { dubSegments } from "./dubbing.js";
+import { withRetries } from "./retry.js";
 
 const ai = config.openaiApiKey ? new OpenAI({
   apiKey: config.openaiApiKey,
@@ -78,31 +79,68 @@ async function extractAudio(videoPath, audioPath) {
   return audioPath;
 }
 
-const TRANSCRIPTION_CHUNK_SECONDS = 120;
-const TRANSCRIPTION_MAX_RETRIES = 3;
+// Whisper accepts files up to 25 MB; 16 kHz mono PCM is ~1.9 MB per minute, so 10 minutes stays well below it.
+const TRANSCRIPTION_MAX_CHUNK_SECONDS = 600;
+const TRANSCRIPTION_MIN_CHUNK_SECONDS = 240;
+const TRANSCRIPTION_MAX_RETRIES = 4;
+const CONTEXT_PROMPT_CHARACTERS = 220;
 
-function wait(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+// Languages OpenAI documents as supported by whisper-1. Others (e.g. Yoruba) are auto-detected instead,
+// because forcing an unsupported hint lowers accuracy.
+const WHISPER_LANGUAGES = new Set([
+  "af", "ar", "hy", "az", "be", "bs", "bg", "ca", "zh", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "gl", "de", "el",
+  "he", "hi", "hu", "is", "id", "it", "ja", "kn", "kk", "ko", "lv", "lt", "mk", "ms", "mr", "mi", "ne", "no", "fa", "pl",
+  "pt", "ro", "ru", "sr", "sk", "sl", "es", "sw", "sv", "tl", "ta", "th", "tr", "uk", "ur", "vi", "cy",
+]);
+
+export function whisperLanguageHint(code) {
+  const normalized = code === "fil" ? "tl" : code;
+  return WHISPER_LANGUAGES.has(normalized) ? normalized : undefined;
 }
 
-function isRetryableTranscriptionError(error) {
-  const code = String(error?.code || "").toLowerCase();
-  const message = String(error?.message || error || "").toLowerCase();
-  return [
-    "ecconnreset", "econnreset", "econnaborted", "etag", "etimedout", "timeout",
-    "fetch failed", "network", "temporar", "rate limit", "429", "too many requests",
-  ].some((token) => code.includes(token) || message.includes(token));
+async function detectSilences(audioPath) {
+  const { stderr } = await runCapture("ffmpeg", ["-v", "info", "-i", audioPath, "-af", "silencedetect=noise=-35dB:d=0.35", "-f", "null", "-"]);
+  const silences = [];
+  let pendingStart = null;
+  for (const line of stderr.split(/\r?\n/)) {
+    const started = line.match(/silence_start:\s*(-?\d+(?:\.\d+)?)/);
+    const ended = line.match(/silence_end:\s*(-?\d+(?:\.\d+)?)/);
+    if (started) pendingStart = Math.max(0, Number(started[1]));
+    if (ended && pendingStart !== null) {
+      silences.push({ start: pendingStart, end: Number(ended[1]) });
+      pendingStart = null;
+    }
+  }
+  return silences;
 }
 
-export async function splitAudioForTranscription(audioPath, chunksDirectory) {
-  await run("ffmpeg", [
-    "-y", "-i", audioPath, "-f", "segment", "-segment_time", String(TRANSCRIPTION_CHUNK_SECONDS),
-    "-reset_timestamps", "1", "-c:a", "pcm_s16le", "-ar", "16000", "-ac", "1",
-    join(chunksDirectory, "chunk-%04d.wav"),
-  ]);
-  const names = (await readdir(chunksDirectory)).filter((name) => name.endsWith(".wav")).sort();
-  if (names.length === 0) throw new Error("Audio extraction produced no transcription chunks.");
-  return names.map((name, index) => ({ path: join(chunksDirectory, name), offset: index * TRANSCRIPTION_CHUNK_SECONDS }));
+/** Splits audio into chunks Whisper can accept, cutting in the middle of pauses so words are never split. */
+export async function splitAudioForTranscription(audioPath, chunksDirectory, { maxSeconds = TRANSCRIPTION_MAX_CHUNK_SECONDS, minSeconds = Math.min(TRANSCRIPTION_MIN_CHUNK_SECONDS, maxSeconds / 2) } = {}) {
+  const duration = Number((await getMediaInfo(audioPath)).format?.duration);
+  if (!Number.isFinite(duration) || duration <= 0) throw new Error("Audio extraction produced an empty audio track.");
+  const silences = duration > maxSeconds ? await detectSilences(audioPath) : [];
+
+  const cuts = [0];
+  while (duration - cuts[cuts.length - 1] > maxSeconds) {
+    const from = cuts[cuts.length - 1];
+    const candidates = silences
+      .map((silence) => (silence.start + silence.end) / 2)
+      .filter((middle) => middle >= from + minSeconds && middle <= from + maxSeconds);
+    cuts.push(candidates.length ? candidates[candidates.length - 1] : from + maxSeconds);
+  }
+  cuts.push(duration);
+
+  const chunks = [];
+  for (let index = 0; index < cuts.length - 1; index += 1) {
+    const path = join(chunksDirectory, `chunk-${String(index).padStart(4, "0")}.wav`);
+    await run("ffmpeg", [
+      "-y", "-i", audioPath, "-ss", cuts[index].toFixed(3), "-to", cuts[index + 1].toFixed(3),
+      "-c:a", "pcm_s16le", "-ar", "16000", "-ac", "1", path,
+    ]);
+    chunks.push({ path, offset: cuts[index] });
+  }
+  if (chunks.length === 0) throw new Error("Audio extraction produced no transcription chunks.");
+  return chunks;
 }
 
 function languageCodeFromName(name) {
@@ -113,29 +151,28 @@ function languageCodeFromName(name) {
     "nigerian pidgin": "pcm", fula: "ff", fulfulde: "ff", kanuri: "kr",
   };
   if (aliases[normalized]) return aliases[normalized];
+  if (getLanguage(normalized)) return normalized;
   return languages.find((language) => language.name.toLowerCase() === normalized)?.code || null;
 }
 
-export async function transcribeAudioChunks(chunks, requestTranscription) {
+export async function transcribeAudioChunks(chunks, requestTranscription, { language, retryDelayMs = 2000 } = {}) {
   const segments = [];
   const chunkLanguages = new Set();
+  let context = "";
 
   for (const chunk of chunks) {
+    const options = { language };
+    // Whisper treats the prompt as the words spoken just before this chunk, which keeps names and spelling consistent.
+    if (context) options.prompt = context.slice(-CONTEXT_PROMPT_CHARACTERS);
     let response;
-    let lastError;
-
-    for (let attempt = 1; attempt <= TRANSCRIPTION_MAX_RETRIES; attempt += 1) {
-      try {
-        response = await requestTranscription(chunk);
-        break;
-      } catch (error) {
-        lastError = error;
-        const retryable = isRetryableTranscriptionError(error);
-        if (!retryable || attempt === TRANSCRIPTION_MAX_RETRIES) {
-          throw new Error(`Transcription failed for ${chunk.path}: ${error instanceof Error ? error.message : String(error)}`);
-        }
-        await wait(Math.min(2000 * attempt, 8000));
-      }
+    try {
+      response = await withRetries(() => requestTranscription(chunk, options), {
+        attempts: TRANSCRIPTION_MAX_RETRIES,
+        baseDelayMs: retryDelayMs,
+        label: `Transcription of ${basename(chunk.path)}`,
+      });
+    } catch (error) {
+      throw new Error(`Transcription failed for ${chunk.path}: ${error.cause?.message || error.message}`);
     }
 
     const detectedCode = languageCodeFromName(response.language);
@@ -153,61 +190,87 @@ export async function transcribeAudioChunks(chunks, requestTranscription) {
       const info = await getMediaInfo(chunk.path);
       segments.push({
         start: chunk.offset,
-        end: chunk.offset + Number(info.format.duration || TRANSCRIPTION_CHUNK_SECONDS),
+        end: chunk.offset + Number(info.format.duration || TRANSCRIPTION_MAX_CHUNK_SECONDS),
         text: response.text.trim(),
         language: detectedCode || "und",
       });
     }
+    const chunkText = chunkSegments.map((segment) => segment.text).join(" ") || response.text?.trim() || "";
+    if (chunkText) context = `${context} ${chunkText}`.trim().slice(-CONTEXT_PROMPT_CHARACTERS * 2);
   }
 
   if (segments.length === 0) throw new Error("No speech was transcribed from the video. Check its audio track and try again.");
   return { segments, chunkLanguages: [...chunkLanguages] };
 }
 
-async function transcribe(audioPath, chunksDirectory) {
+async function transcribe(audioPath, chunksDirectory, sourceLanguage) {
   if (!ai) throw new Error("OPENAI_API_KEY is required for transcription.");
   const chunks = await splitAudioForTranscription(audioPath, chunksDirectory);
-  return transcribeAudioChunks(chunks, (chunk) => ai.audio.transcriptions.create({
+  return transcribeAudioChunks(chunks, (chunk, { language, prompt }) => ai.audio.transcriptions.create({
     model: config.openaiTranscriptionModel,
     file: createReadStream(chunk.path),
     response_format: "verbose_json",
     timestamp_granularities: ["segment"],
-    prompt: "Transcribe every spoken word verbatim in its original language. Do not translate or summarize.",
-  }));
+    temperature: 0,
+    ...(language ? { language } : {}),
+    ...(prompt ? { prompt } : {}),
+  }), { language: whisperLanguageHint(sourceLanguage) });
 }
 
-export async function detectSegmentLanguages(segments, requestCompletion, fallbackLanguage = "auto") {
+const CHAT_BATCH_SIZE = 40;
+const CHAT_OUTPUT_ATTEMPTS = 3;
+
+class IncompleteOutputError extends Error {}
+
+// Retries network failures, and re-asks when the model returns JSON that is invalid or misses a segment.
+async function completeSegmentBatch(complete, request, expectedCount, { retryDelayMs = 2000, label }) {
+  let lastProblem;
+  for (let attempt = 1; attempt <= CHAT_OUTPUT_ATTEMPTS; attempt += 1) {
+    const response = await withRetries(() => complete(request), { baseDelayMs: retryDelayMs, label });
+    let items;
+    try {
+      items = JSON.parse(response.choices[0]?.message?.content || "{}").segments;
+    } catch {
+      lastProblem = new IncompleteOutputError(`${label} returned invalid segment data.`);
+      continue;
+    }
+    if (!Array.isArray(items)) {
+      lastProblem = new IncompleteOutputError(`${label} returned invalid segment data.`);
+      continue;
+    }
+    const byIndex = new Map(items.map((item) => [Number(item.index), item]));
+    if (byIndex.size < expectedCount || [...Array(expectedCount).keys()].some((index) => !byIndex.has(index))) {
+      lastProblem = new IncompleteOutputError(`${label} returned ${byIndex.size} of ${expectedCount} segments.`);
+      continue;
+    }
+    return byIndex;
+  }
+  throw lastProblem;
+}
+
+export async function detectSegmentLanguages(segments, requestCompletion, fallbackLanguage = "auto", { retryDelayMs } = {}) {
   if (!requestCompletion && !ai) throw new Error("OPENAI_API_KEY is required to identify spoken languages.");
   const complete = requestCompletion || ((request) => ai.chat.completions.create(request));
   const catalog = languages.filter(({ code }) => code !== "auto").map(({ code, name }) => `${code}: ${name}`).join("\n");
   const result = [];
 
-  for (let offset = 0; offset < segments.length; offset += 60) {
-    const batch = segments.slice(offset, offset + 60);
-    const response = await complete({
+  for (let offset = 0; offset < segments.length; offset += CHAT_BATCH_SIZE) {
+    const batch = segments.slice(offset, offset + CHAT_BATCH_SIZE);
+    const byIndex = await completeSegmentBatch(complete, {
       model: config.openaiChatModel,
       response_format: { type: "json_object" },
+      temperature: 0,
       messages: [
         {
           role: "system",
-          content: `Identify the language actually spoken in each short transcript segment. A video may switch languages; classify every segment independently. Return JSON {"segments":[{"index":0,"language":"en"}]}. Use only these codes, or "und" if genuinely uncertain:\n${catalog}`,
+          content: `Identify the language actually spoken in each short transcript segment. A video may switch languages; classify every segment independently. Return JSON {"segments":[{"index":0,"language":"en"}]} with exactly one entry per input segment. Use only these codes, or "und" if genuinely uncertain:\n${catalog}`,
         },
         { role: "user", content: JSON.stringify(batch.map((segment, index) => ({ index, text: segment.text }))) },
       ],
-    });
+    }, batch.length, { retryDelayMs, label: "Language identification" });
 
-    let detected;
-    try {
-      detected = JSON.parse(response.choices[0]?.message?.content || "{}").segments;
-    } catch {
-      throw new Error("Language identification returned invalid segment data.");
-    }
-    if (!Array.isArray(detected) || detected.length !== batch.length) {
-      throw new Error("Language identification did not classify every transcript segment.");
-    }
-    const byIndex = new Map(detected.map((item) => [Number(item.index), String(item.language || "und").toLowerCase()]));
     result.push(...batch.map((segment, index) => {
-      const code = byIndex.get(index);
+      const code = String(byIndex.get(index)?.language || "und").toLowerCase();
       const fallback = getLanguage(segment.language) ? segment.language : fallbackLanguage;
       return { ...segment, language: getLanguage(code) ? code : getLanguage(fallback) && fallback !== "auto" ? fallback : "und" };
     }));
@@ -215,7 +278,7 @@ export async function detectSegmentLanguages(segments, requestCompletion, fallba
   return result;
 }
 
-export async function translate(segments, targetLanguage, requestCompletion) {
+export async function translate(segments, targetLanguage, requestCompletion, { retryDelayMs } = {}) {
   const target = getLanguage(targetLanguage)?.name || targetLanguage;
   if (!requestCompletion && !ai) throw new Error("OPENAI_API_KEY is required for translation.");
   const complete = requestCompletion || ((request) => ai.chat.completions.create(request));
@@ -230,164 +293,29 @@ export async function translate(segments, targetLanguage, requestCompletion) {
 
   for (const [sourceCode, group] of groups) {
     const source = getLanguage(sourceCode)?.name || "the spoken source language";
-    for (let offset = 0; offset < group.length; offset += 60) {
-      const batch = group.slice(offset, offset + 60);
-      const response = await complete({
+    for (let offset = 0; offset < group.length; offset += CHAT_BATCH_SIZE) {
+      const batch = group.slice(offset, offset + CHAT_BATCH_SIZE);
+      const byIndex = await completeSegmentBatch(complete, {
         model: config.openaiChatModel,
         response_format: { type: "json_object" },
+        temperature: 0.2,
         messages: [
           {
             role: "system",
-            content: `Translate every segment from ${source} into natural, conversational ${target}. Translate the words faithfully and preserve each original index. Return JSON {"segments":[{"index":0,"text":"..."}]}. Do not summarize or add commentary.`,
+            content: `Translate every segment from ${source} into natural, conversational ${target}. Translate every word faithfully, keep names as spoken, and never merge, split, skip or summarize segments. Return JSON {"segments":[{"index":0,"text":"..."}]} with exactly one entry per input segment, preserving each index.`,
           },
-          { role: "user", content: JSON.stringify(batch.map(({ index, text }) => ({ index, text }))) },
+          { role: "user", content: JSON.stringify(batch.map((item, index) => ({ index, text: item.text }))) },
         ],
-      });
+      }, batch.length, { retryDelayMs, label: "Translation" });
 
-      let responseSegments;
-      try {
-        responseSegments = JSON.parse(response.choices[0]?.message?.content || "{}").segments;
-      } catch {
-        throw new Error("Translation provider returned invalid segment data.");
-      }
-      if (!Array.isArray(responseSegments) || responseSegments.length !== batch.length) {
-        throw new Error("Translation provider returned an incomplete translation.");
-      }
-      const byIndex = new Map(responseSegments.map((item) => [Number(item.index), String(item.text || "").trim()]));
-      for (const item of batch) {
-        const text = byIndex.get(item.index);
+      batch.forEach((item, index) => {
+        const text = String(byIndex.get(index)?.text || "").trim();
         if (!text) throw new Error(`Translation is missing transcript segment ${item.index + 1}.`);
         translated[item.index] = { ...segments[item.index], text };
-      }
+      });
     }
   }
   return translated;
-}
-
-function splitSpeechText(text, maxLength = 3000) {
-  const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
-  const chunks = [];
-  let current = "";
-  for (const sentence of sentences) {
-    const part = sentence.trim();
-    if (!part) continue;
-    if (current && current.length + part.length + 1 > maxLength) {
-      chunks.push(current);
-      current = "";
-    }
-    current = current ? `${current} ${part}` : part;
-  }
-  if (current) chunks.push(current);
-  return chunks;
-}
-
-async function createSpeechSample(sourceAudioPath, segments, outputPath) {
-  const speechSegments = segments.filter((segment) => (
-    Number.isFinite(segment.start) && Number.isFinite(segment.end) && segment.end > segment.start
-  ));
-  if (speechSegments.length === 0) throw new Error("No speech intervals were found to create a voice sample.");
-
-  const filters = speechSegments.map((segment, index) => (
-    `[0:a]atrim=start=${Math.max(0, segment.start)}:end=${segment.end},asetpts=PTS-STARTPTS,highpass=f=80,lowpass=f=8000,afftdn[a${index}]`
-  ));
-  const inputs = speechSegments.map((_, index) => `[a${index}]`).join("");
-  filters.push(`${inputs}concat=n=${speechSegments.length}:v=0:a=1[out]`);
-  await run("ffmpeg", [
-    "-y", "-i", sourceAudioPath,
-    "-filter_complex", filters.join(";"), "-map", "[out]",
-    "-ac", "1", "-ar", "44100", "-c:a", "libmp3lame", "-b:a", "128k", outputPath,
-  ]);
-  return outputPath;
-}
-
-export async function dubWithClonedVoice(segments, sourceAudioPath, outputPath, targetLanguage) {
-  const text = segments.map((segment) => segment.text).join(" ").trim();
-  if (!text) throw new Error("No translated speech is available to dub.");
-  if (!config.elevenlabsApiKey) throw new Error("ELEVENLABS_API_KEY is required to clone the speaker in this video.");
-
-  const target = getLanguage(targetLanguage)?.name || targetLanguage;
-  const scratch = await mkdtemp(join(tmpdir(), "reellingo-voice-clone-"));
-  let voiceId;
-  try {
-    const samplePath = join(scratch, "speaker-sample.mp3");
-    await createSpeechSample(sourceAudioPath, segments, samplePath);
-
-    const form = new FormData();
-    form.append("name", `ReelLingo temporary speaker ${Date.now()}`);
-    form.append("description", "Temporary clone made from speech in the user's uploaded video.");
-    form.append("remove_background_noise", "true");
-    form.append("files", new Blob([await readFile(samplePath)], { type: "audio/mpeg" }), "speaker-sample.mp3");
-    const cloneResponse = await fetch("https://api.elevenlabs.io/v1/voices/add", {
-      method: "POST",
-      headers: { "xi-api-key": config.elevenlabsApiKey },
-      body: form,
-    });
-    if (!cloneResponse.ok) {
-      throw new Error(`Could not clone the speaker from this video (${cloneResponse.status}): ${await cloneResponse.text()}`);
-    }
-    const clone = await cloneResponse.json();
-    voiceId = clone.voice_id;
-    if (!voiceId) throw new Error("ElevenLabs did not return a voice ID for the uploaded speaker.");
-
-    const speechResponse = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`, {
-      method: "POST",
-      headers: { "xi-api-key": config.elevenlabsApiKey, "Content-Type": "application/json", Accept: "audio/mpeg" },
-      body: JSON.stringify({ model_id: "eleven_multilingual_v2", text, language_code: targetLanguage }),
-    });
-    if (!speechResponse.ok) {
-      throw new Error(`Could not synthesize the translated voice (${speechResponse.status}): ${await speechResponse.text()}`);
-    }
-    const audio = Buffer.from(await speechResponse.arrayBuffer());
-    if (audio.length === 0) throw new Error("ElevenLabs returned an empty translated audio file.");
-    await writeFile(outputPath, audio);
-    return outputPath;
-  } finally {
-    if (voiceId) {
-      try {
-        const deleteResponse = await fetch(`https://api.elevenlabs.io/v1/voices/${encodeURIComponent(voiceId)}`, {
-          method: "DELETE",
-          headers: { "xi-api-key": config.elevenlabsApiKey },
-        });
-        if (!deleteResponse.ok) console.warn(`Could not delete temporary ElevenLabs voice ${voiceId} (${deleteResponse.status}).`);
-      } catch (error) {
-        console.warn("Could not delete temporary ElevenLabs voice.", error);
-      }
-    }
-    await rm(scratch, { recursive: true, force: true });
-  }
-}
-
-async function dub(segments, sourceAudioPath, outputPath, targetLanguage, voiceClone) {
-  const text = segments.map((segment) => segment.text).join(" ").trim();
-  if (!text) throw new Error("No translated speech is available to dub.");
-
-  if (voiceClone) return dubWithClonedVoice(segments, sourceAudioPath, outputPath, targetLanguage);
-
-  if (!ai) throw new Error("OPENAI_API_KEY is required for translated speech synthesis.");
-  const target = getLanguage(targetLanguage)?.name || targetLanguage;
-  const scratch = await mkdtemp(join(tmpdir(), "reellingo-tts-"));
-  try {
-    const chunks = splitSpeechText(text);
-    const parts = [];
-    for (let index = 0; index < chunks.length; index += 1) {
-      const response = await ai.audio.speech.create({
-        model: "gpt-4o-mini-tts",
-        voice: "alloy",
-        input: chunks[index],
-        instructions: `Speak naturally and clearly in ${target}. Do not translate, summarize, or add any words.`,
-        response_format: "mp3",
-      });
-      const partPath = join(scratch, `part-${index}.mp3`);
-      await writeFile(partPath, Buffer.from(await response.arrayBuffer()));
-      parts.push(partPath);
-    }
-    const concatPath = join(scratch, "parts.txt");
-    await writeFile(concatPath, parts.map((path) => `file '${path.replaceAll("'", "'\\''")}'`).join("\n"));
-    await run("ffmpeg", ["-y", "-f", "concat", "-safe", "0", "-i", concatPath, "-c:a", "libmp3lame", outputPath]);
-  } finally {
-    await rm(scratch, { recursive: true, force: true });
-  }
-  return outputPath;
 }
 
 function timestamp(seconds) {
@@ -412,15 +340,21 @@ export async function runPipeline(jobId, localVideoPath, job) {
       throw new Error("Live dubbing is not configured. Set OPENAI_API_KEY in backend/.env; demo placeholders are never exported as a finished dub.");
     }
     await updateJob(jobId, { status: "processing", current_step: "extracting_audio", error_message: null });
-    const audioPath = join(workdir, "source.wav");
-    await extractAudio(localVideoPath, audioPath);
     const mediaInfo = await getMediaInfo(localVideoPath);
     const durationSeconds = Number(mediaInfo.format?.duration);
+    if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) throw new Error("Could not read the video's duration.");
+    if (!mediaInfo.streams.some((stream) => stream.codec_type === "audio")) {
+      throw new Error("This video has no audio track, so there is no speech to translate.");
+    }
+    const audioPath = join(workdir, "source.wav");
+    const speakerAudioPath = join(workdir, "speaker.wav");
+    await extractAudio(localVideoPath, audioPath);
+    await run("ffmpeg", ["-y", "-i", localVideoPath, "-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "1", speakerAudioPath]);
     const chunksDirectory = join(workdir, "transcription-chunks");
     await mkdir(chunksDirectory, { recursive: true });
 
-    await updateJob(jobId, { current_step: "transcribing" });
-    const { segments: rawTranscript, chunkLanguages } = await transcribe(audioPath, chunksDirectory);
+    await updateJob(jobId, { current_step: "transcribing", duration_seconds: durationSeconds });
+    const { segments: rawTranscript, chunkLanguages } = await transcribe(audioPath, chunksDirectory, job.source_language);
 
     await updateJob(jobId, { current_step: "detecting_languages" });
     const transcript = await detectSegmentLanguages(rawTranscript, undefined, job.source_language);
@@ -431,7 +365,6 @@ export async function runPipeline(jobId, localVideoPath, job) {
     await updateJob(jobId, {
       transcript_json: JSON.stringify(transcript),
       detected_languages_json: JSON.stringify(detectedLanguages),
-      duration_seconds: durationSeconds,
     });
 
     await updateJob(jobId, { current_step: "translating" });
@@ -439,8 +372,21 @@ export async function runPipeline(jobId, localVideoPath, job) {
     await updateJob(jobId, { translated_segments_json: JSON.stringify(translated) });
 
     await updateJob(jobId, { current_step: "dubbing" });
-    const dubbedAudioPath = join(workdir, "translated-audio.mp3");
-    await dub(translated, audioPath, dubbedAudioPath, job.target_language, Boolean(job.voice_clone));
+    const dubbedAudioPath = join(workdir, "translated-audio.wav");
+    const dubResult = await dubSegments({
+      segments: translated,
+      sourceSegments: transcript,
+      sourceAudioPath: speakerAudioPath,
+      outputPath: dubbedAudioPath,
+      targetLanguage: job.target_language,
+      voiceClone: Boolean(job.voice_clone),
+      durationSeconds,
+      workdir,
+    });
+    if (dubResult.fallbackReason) {
+      const voice = dubResult.provider === "openai" ? "an OpenAI voice" : "a standard ElevenLabs voice";
+      await updateJob(jobId, { voice_clone: dubResult.voiceCloned, processing_note: `Dubbed with ${voice}. ${dubResult.fallbackReason}` });
+    }
     await assertAudibleAudio(dubbedAudioPath);
 
     await updateJob(jobId, { current_step: "merging" });
@@ -457,6 +403,7 @@ export async function runPipeline(jobId, localVideoPath, job) {
       current_step: "done",
     });
   } catch (error) {
+    console.error(`Job ${jobId} failed:`, error);
     await updateJob(jobId, { status: "failed", error_message: error instanceof Error ? error.message : String(error) });
   } finally {
     await rm(workdir, { recursive: true, force: true });

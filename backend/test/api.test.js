@@ -72,6 +72,14 @@ test("demo API exposes regional languages and protects job routes", async (conte
   const headers = { Authorization: `Bearer ${auth.access_token}` };
   const emptyJobs = await fetch(`${baseUrl}/jobs`, { headers }).then((response) => response.json());
   assert.deepEqual(emptyJobs, []);
+  assert.equal((await fetch(`${baseUrl}/usage`)).status, 401);
+  const emptyUsage = await fetch(`${baseUrl}/usage`, { headers }).then((response) => response.json());
+  assert.deepEqual(emptyUsage, { tier: "free", videos_this_month: 0, minutes_this_month: 0, max_videos_per_month: 5, max_video_minutes: 10 });
+
+  const oauthRedirect = await fetch(`${baseUrl}/auth/oauth/google`, { redirect: "manual" });
+  assert.equal(oauthRedirect.status, 302);
+  assert.match(oauthRedirect.headers.get("location"), /\/login\?error=oauth_unavailable$/);
+  assert.equal((await fetch(`${baseUrl}/auth/oauth/myspace`, { redirect: "manual" })).status, 404);
   const blockedUpload = await fetch(`${baseUrl}/jobs`, { method: "POST", headers });
   assert.equal(blockedUpload.status, 503);
   assert.match((await blockedUpload.json()).detail, /OPENAI_API_KEY/);
@@ -82,10 +90,15 @@ test("demo API exposes regional languages and protects job routes", async (conte
     target_language: "en",
     voice_clone: false,
     input_storage_path: "uploads/test.mp4",
+    original_filename: "Lagos_Market_Tour.mp4",
   });
   const response = await fetch(`${baseUrl}/jobs/${job.id}`, { headers });
   assert.equal(response.status, 200);
-  assert.equal((await response.json()).status, "queued");
+  const queued = await response.json();
+  assert.equal(queued.status, "queued");
+  assert.equal(queued.original_filename, "Lagos_Market_Tour.mp4");
+  assert.equal(queued.processing_note, null);
+  assert.ok(Math.abs(Date.parse(queued.created_at) - Date.now()) < 60_000, `unexpected created_at ${queued.created_at}`);
   await database.updateJob(job.id, {
     transcript_json: JSON.stringify([{ start: 0, end: 1, text: "Bawo ni", language: "yo" }]),
     translated_segments_json: JSON.stringify([{ start: 0, end: 1, text: "How are you", language: "yo" }]),
@@ -97,6 +110,9 @@ test("demo API exposes regional languages and protects job routes", async (conte
   assert.equal(persisted.translated_segments[0].text, "How are you");
   assert.deepEqual(persisted.detected_languages.map((language) => language.code), ["yo", "en"]);
   assert.equal(persisted.duration_seconds, 12.5);
+  const usage = await fetch(`${baseUrl}/usage`, { headers }).then((result) => result.json());
+  assert.equal(usage.videos_this_month, 1);
+  assert.equal(usage.minutes_this_month, 0.2);
 
   const wrongOwner = await database.createJob({
     user_id: "another-user",
@@ -129,4 +145,12 @@ test("demo API exposes regional languages and protects job routes", async (conte
   assert.equal(finishedResponse.demo_mode, true);
   assert.equal(finishedResponse.output_video_url, null);
   assert.equal(finishedResponse.transcript, null);
+
+  const usageAfterFailure = await fetch(`${baseUrl}/usage`, { headers }).then((result) => result.json());
+  assert.equal(usageAfterFailure.videos_this_month, 1, "failed jobs do not use up the monthly allowance");
+
+  assert.equal(await database.failInterruptedJobs(), 2, "both queued jobs (this user and another user) are recovered");
+  const interrupted = await fetch(`${baseUrl}/jobs/${job.id}`, { headers }).then((result) => result.json());
+  assert.equal(interrupted.status, "failed");
+  assert.match(interrupted.error_message, /server restarted/);
 });

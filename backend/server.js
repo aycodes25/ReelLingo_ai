@@ -9,7 +9,7 @@ import { basename, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "./src/config.js";
 import { getCurrentUserId, login, logout, signup } from "./src/auth.js";
-import { closeDatabase, createJob, getJob, getSubscription, initializeDatabase, listJobs } from "./src/database.js";
+import { closeDatabase, createJob, failInterruptedJobs, getJob, getMonthlyUsage, getSubscription, initializeDatabase, listJobs } from "./src/database.js";
 import { getLanguage, languages } from "./src/languages.js";
 import { runPipeline } from "./src/pipeline.js";
 import { getSignedUrl, uploadFile } from "./src/storage.js";
@@ -72,6 +72,26 @@ function requireLivePipeline(_request, response, next) {
   next();
 }
 
+// SQLite stores CURRENT_TIMESTAMP as "YYYY-MM-DD HH:MM:SS" in UTC without a zone marker.
+function toIsoTimestamp(value) {
+  if (value instanceof Date) return value.toISOString();
+  const text = String(value);
+  return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text) ? `${text.replace(" ", "T")}Z` : text;
+}
+
+const oauthProviders = new Set(["google", "github", "apple"]);
+
+async function planFor(userId) {
+  const [subscription, usage] = await Promise.all([getSubscription(userId), getMonthlyUsage(userId)]);
+  return {
+    tier: subscription?.tier || "free",
+    videosThisMonth: usage.videos,
+    minutesThisMonth: Math.round((usage.seconds / 60) * 10) / 10,
+    maxVideosPerMonth: Number(subscription?.max_videos_per_month || config.freeVideosPerMonth),
+    maxVideoMinutes: Math.min(Number(subscription?.max_video_minutes || config.freeMaxVideoMinutes), config.maxVideoMinutes),
+  };
+}
+
 async function jobOutput(job) {
   return {
     id: Number(job.id),
@@ -92,6 +112,9 @@ async function jobOutput(job) {
     })),
     duration_seconds: job.duration_seconds === null || job.duration_seconds === undefined ? null : Number(job.duration_seconds),
     error_message: job.error_message,
+    original_filename: job.original_filename || null,
+    processing_note: job.processing_note || null,
+    created_at: job.created_at ? toIsoTimestamp(job.created_at) : null,
     demo_mode: config.mockMode,
   };
 }
@@ -147,6 +170,22 @@ app.post("/auth/login", asyncRoute(async (request, response) => {
   }
 }));
 
+app.get("/auth/oauth/:provider", (request, response) => {
+  const provider = String(request.params.provider);
+  if (!oauthProviders.has(provider)) {
+    response.status(404).json({ detail: "Unsupported sign-in provider." });
+    return;
+  }
+  if (!config.supabaseUrl || !config.supabaseKey) {
+    response.redirect(`${config.frontendUrl}/login?error=oauth_unavailable`);
+    return;
+  }
+  const authorize = new URL(`${config.supabaseUrl}/auth/v1/authorize`);
+  authorize.searchParams.set("provider", provider);
+  authorize.searchParams.set("redirect_to", `${config.frontendUrl}/auth/callback`);
+  response.redirect(authorize.toString());
+});
+
 app.post("/auth/logout", asyncRoute(async (request, response) => {
   await logout(request.headers.authorization);
   response.status(204).end();
@@ -178,16 +217,15 @@ app.post("/jobs", asyncRoute(authenticate), requireLivePipeline, upload.single("
 
   try {
     const duration = await durationSeconds(temporaryPath);
-    const subscription = await getSubscription(request.userId);
-    const maxMinutes = Number(subscription?.max_video_minutes || 3);
-    const used = Number(subscription?.videos_used_this_month || 0);
-    const limit = Number(subscription?.max_videos_per_month || 1);
-    if (used >= limit) {
-      response.status(402).json({ detail: "Monthly video limit reached. Please upgrade your plan." });
+    const plan = await planFor(request.userId);
+    if (plan.videosThisMonth >= plan.maxVideosPerMonth) {
+      await rm(temporaryPath, { force: true });
+      response.status(402).json({ detail: `You've used all ${plan.maxVideosPerMonth} videos in your plan this month. Upgrade to translate more.` });
       return;
     }
-    if (duration > maxMinutes * 60) {
-      response.status(402).json({ detail: `Video exceeds the ${maxMinutes}-minute limit for your plan.` });
+    if (duration > plan.maxVideoMinutes * 60) {
+      await rm(temporaryPath, { force: true });
+      response.status(402).json({ detail: `This video is ${Math.ceil(duration / 60)} minutes long. Your plan allows videos up to ${plan.maxVideoMinutes} minutes.` });
       return;
     }
 
@@ -199,6 +237,7 @@ app.post("/jobs", asyncRoute(authenticate), requireLivePipeline, upload.single("
       target_language: targetLanguage,
       voice_clone: true,
       input_storage_path: inputPath,
+      original_filename: basename(request.file.originalname),
     });
     response.status(201).json(await jobOutput(job));
     void runPipeline(job.id, temporaryPath, job);
@@ -209,8 +248,21 @@ app.post("/jobs", asyncRoute(authenticate), requireLivePipeline, upload.single("
 }));
 
 app.get("/jobs", asyncRoute(authenticate), asyncRoute(async (request, response) => {
-  const jobs = await listJobs(request.userId);
+  const requestedLimit = Number.parseInt(String(request.query.limit ?? ""), 10);
+  const limit = Number.isInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 10;
+  const jobs = await listJobs(request.userId, limit);
   response.json(await Promise.all(jobs.map(jobOutput)));
+}));
+
+app.get("/usage", asyncRoute(authenticate), asyncRoute(async (request, response) => {
+  const plan = await planFor(request.userId);
+  response.json({
+    tier: plan.tier,
+    videos_this_month: plan.videosThisMonth,
+    minutes_this_month: plan.minutesThisMonth,
+    max_videos_per_month: plan.maxVideosPerMonth,
+    max_video_minutes: plan.maxVideoMinutes,
+  });
 }));
 
 app.get("/jobs/:jobId", asyncRoute(authenticate), asyncRoute(async (request, response) => {
@@ -234,6 +286,8 @@ app.use((error, _request, response, _next) => {
 
 export async function startServer() {
   await initializeDatabase();
+  const interrupted = await failInterruptedJobs();
+  if (interrupted) console.log(`Marked ${interrupted} interrupted job(s) as failed.`);
   const server = app.listen(config.port, () => {
     console.log(`ReelLingo API listening on http://localhost:${config.port} (${config.mockMode ? "demo" : "live"} mode)`);
   });

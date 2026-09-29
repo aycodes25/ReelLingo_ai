@@ -24,6 +24,9 @@ export interface Job {
   output_srt_url: string | null;
   output_srt_download_url: string | null;
   error_message: string | null;
+  original_filename: string | null;
+  processing_note: string | null;
+  created_at: string | null;
   demo_mode: boolean;
   transcript: TranscriptSegment[] | null;
   translated_segments: TranscriptSegment[] | null;
@@ -43,4 +46,18 @@ export interface ApiHealth {
   status: string;
   mode: "demo" | "live";
   capabilities: { languages: number; voiceClone: boolean; authentication: boolean };
+}
+
+export interface Usage {
+  tier: string;
+  videos_this_month: number;
+  minutes_this_month: number;
+  max_videos_per_month: number;
+  max_video_minutes: number;
+}
+
+export interface SessionUser {
+  email: string;
+  name: string;
+  creatorType: string;
 }
