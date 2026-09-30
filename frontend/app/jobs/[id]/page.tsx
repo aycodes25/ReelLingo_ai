@@ -4,10 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
-  Captions, Check, CircleAlert, CircleCheck, Clock3, Download, ExternalLink, FileText, Info, Languages, LoaderCircle, Merge, Mic, Upload,
+  Captions, Check, CircleAlert, CircleCheck, Clock3, Download, ExternalLink, FileText, Info, Languages, LoaderCircle, Merge, Mic, PencilLine, RotateCcw, Upload,
 } from "lucide-react";
 import AppShell, { SUPPORT_EMAIL } from "@/components/AppShell";
-import { getJob, getLanguages } from "@/lib/api";
+import { getJob, getLanguages, retryJob, streamJob } from "@/lib/api";
 import { clock, languageName, PIPELINE_STAGES, progressPercent, projectFileName, sourceLabel, stageIndex, STEP_MESSAGES } from "@/lib/format";
 import type { Job, LanguageOption } from "@/lib/types";
 
@@ -27,6 +27,8 @@ export default function JobStatusPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [log, setLog] = useState<LogEntry[]>([]);
   const lastStepRef = useRef<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const [retryKey, setRetryKey] = useState(0);
   const sawTranscriptRef = useRef(false);
 
   useEffect(() => {
@@ -36,43 +38,73 @@ export default function JobStatusPage() {
   useEffect(() => {
     const jobId = Number(params.id);
     let active = true;
+    const controller = new AbortController();
+    let interval: ReturnType<typeof setInterval> | null = null;
     const push = (entry: Omit<LogEntry, "time">) => {
       const time = new Date().toLocaleTimeString([], { hour12: false });
       setLog((current) => [...current, { time, ...entry }]);
     };
+    const apply = (updated: Job) => {
+      if (!active) return;
+      setJob(updated);
+      setLoadError(null);
+      if (updated.current_step !== lastStepRef.current && updated.status !== "failed") {
+        const firstLook = lastStepRef.current === null;
+        lastStepRef.current = updated.current_step;
+        push({ text: firstLook ? `Connected. ${STEP_MESSAGES[updated.current_step] || "Checking status."}` : STEP_MESSAGES[updated.current_step] || updated.current_step, tone: updated.current_step === "done" ? "success" : undefined });
+      }
+      if (!sawTranscriptRef.current && updated.has_transcript) {
+        sawTranscriptRef.current = true;
+        const detected = updated.detected_languages.map((language) => language.name).join(", ");
+        push({ text: `Transcription finished${detected ? ` (${detected})` : ""}.`, tone: "success" });
+      }
+      if (updated.status === "failed" && lastStepRef.current !== "failed") {
+        lastStepRef.current = "failed";
+        push({ text: updated.error_message || "Processing stopped with an error.", tone: "error" });
+      }
+      if (updated.status === "done") {
+        active = false;
+        controller.abort();
+        setTimeout(() => router.replace(`/result/${jobId}`), 1200);
+      }
+      if (updated.status === "awaiting_review" && lastStepRef.current !== "review-ready") {
+        lastStepRef.current = "review-ready";
+        push({ text: "The translation is ready for your review.", tone: "warn" });
+      }
+    };
     const refresh = async () => {
       try {
-        const updated = await getJob(jobId);
-        if (!active) return;
-        setJob(updated);
-        setLoadError(null);
-        if (updated.current_step !== lastStepRef.current && updated.status !== "failed") {
-          const firstLook = lastStepRef.current === null;
-          lastStepRef.current = updated.current_step;
-          push({ text: firstLook ? `Connected. ${STEP_MESSAGES[updated.current_step] || "Checking status."}` : STEP_MESSAGES[updated.current_step] || updated.current_step, tone: updated.current_step === "done" ? "success" : undefined });
-        }
-        if (!sawTranscriptRef.current && updated.transcript?.length) {
-          sawTranscriptRef.current = true;
-          const detected = updated.detected_languages.map((language) => language.name).join(", ");
-          push({ text: `Transcribed ${updated.transcript.length} speech segment${updated.transcript.length === 1 ? "" : "s"}${detected ? ` in ${detected}` : ""}.`, tone: "success" });
-        }
-        if (updated.status === "failed" && lastStepRef.current !== "failed") {
-          lastStepRef.current = "failed";
-          push({ text: updated.error_message || "Processing stopped with an error.", tone: "error" });
-        }
-        if (updated.status === "done") {
-          active = false;
-          setTimeout(() => router.replace(`/result/${jobId}`), 1200);
-        }
-        if (updated.status === "failed") active = false;
+        apply(await getJob(jobId));
       } catch (error) {
         if (active) setLoadError(error instanceof Error ? error.message : "Could not load job status.");
       }
     };
     void refresh();
-    const interval = setInterval(() => { if (active) void refresh(); }, 3000);
-    return () => { active = false; clearInterval(interval); };
-  }, [params.id, router]);
+    // Live updates over server-sent events; if the stream can't be opened or drops, fall back to polling.
+    streamJob(jobId, apply, controller.signal).catch(() => undefined).finally(() => {
+      if (active && !interval) interval = setInterval(() => { if (active) void refresh(); }, 3000);
+    });
+    return () => {
+      active = false;
+      controller.abort();
+      if (interval) clearInterval(interval);
+    };
+  }, [params.id, router, retryKey]);
+
+  async function handleRetry() {
+    if (!job) return;
+    setRetrying(true);
+    try {
+      await retryJob(job.id);
+      lastStepRef.current = null;
+      setLog([]);
+      setRetryKey((key) => key + 1);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Retry failed.");
+    } finally {
+      setRetrying(false);
+    }
+  }
 
   const fileName = job ? projectFileName(job) : `Project #${params.id}`;
   const crumbs = [{ label: "Dashboard", href: "/dashboard" }, { label: "Projects", href: "/projects" }, { label: fileName }];
@@ -91,6 +123,7 @@ export default function JobStatusPage() {
   }
 
   const failed = job?.status === "failed";
+  const reviewing = job?.status === "awaiting_review";
   const current = job ? (job.status === "done" ? PIPELINE_STAGES.length : stageIndex(job.current_step)) : 0;
   const percent = job ? progressPercent(job) : 0;
   const stage = PIPELINE_STAGES[Math.min(current, PIPELINE_STAGES.length - 1)];
@@ -99,7 +132,7 @@ export default function JobStatusPage() {
     <AppShell crumbs={crumbs}>
       <div className="page-head">
         <div>
-          <h1>{failed ? "Processing Stopped" : "Processing Video"}</h1>
+          <h1>{failed ? "Processing Stopped" : reviewing ? "Ready for Your Review" : "Processing Video"}</h1>
           <div className="proc-head-title">Project: <strong>{fileName}</strong>{job?.voice_clone && <span className="badge-soft badge">VOICE CLONE</span>}</div>
         </div>
         <div className="page-head-actions">
@@ -123,7 +156,27 @@ export default function JobStatusPage() {
           </section>
 
           {failed && (
-            <div className="alert alert-error"><CircleAlert size={16} /><span><strong>This translation could not be completed.</strong> {job?.error_message} <Link href="/dashboard#new-project" className="link">Start a new project</Link></span></div>
+            <div className="alert alert-error"><CircleAlert size={16} /><span><strong>This translation could not be completed.</strong> {job?.error_message}{" "}
+              {job?.files_expired ? <Link href="/dashboard#new-project" className="link">Start a new project</Link> : (
+                <button type="button" className="link" onClick={handleRetry} disabled={retrying}><RotateCcw size={13} style={{ display: "inline", verticalAlign: "-2px" }} /> {retrying ? "Retrying…" : "Retry from where it stopped"}</button>
+              )}
+            </span></div>
+          )}
+          {reviewing && (
+            <div className="alert alert-success"><PencilLine size={16} /><span><strong>Your translation is ready.</strong> Check names, slang and phrasing line by line, then generate the voice. <Link href={`/jobs/${params.id}/edit`} className="link">Review translation →</Link></span></div>
+          )}
+          {job?.processing_note && !failed && (
+            <div className="alert alert-warn"><Info size={16} /><span>{job.processing_note}</span></div>
+          )}
+          {job?.batch && job.batch.length > 1 && (
+            <div className="batch-strip" aria-label="Other languages from this upload">
+              <span>This upload:</span>
+              {job.batch.map((item) => (
+                <Link key={item.id} href={item.status === "done" ? `/result/${item.id}` : `/jobs/${item.id}`} className={`batch-pill ${item.id === job.id ? "is-current" : ""} is-${item.status}`}>
+                  {languageName(languages, item.target_language)} · {item.status === "done" ? "ready" : item.status === "awaiting_review" ? "review" : item.status}
+                </Link>
+              ))}
+            </div>
           )}
 
           <section className="card pipeline-card" aria-labelledby="pipeline-title">
@@ -160,7 +213,7 @@ export default function JobStatusPage() {
               <span><CircleCheck size={20} /></span>
               <div>
                 <h3>Your voice, preserved</h3>
-                <p>Dubbing uses a temporary clone of the original speaker, made from this video&apos;s own audio, and it&apos;s deleted as soon as your dub is ready.</p>
+                <p>Dubbing uses a temporary clone of each speaker, made from this video&apos;s own audio, and it&apos;s deleted as soon as your dub is ready. Background music and sound effects are kept.</p>
                 <Link href="/#features">How voice cloning works <Mic size={13} /></Link>
               </div>
             </article>
@@ -173,15 +226,17 @@ export default function JobStatusPage() {
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src="/images/creator-studio.png" alt="" />
               <span className="chip">Source: {job ? sourceLabel(job, languages) : "…"}</span>
-              {!failed && job?.status !== "done" && <div className="spinner-wrap"><span><LoaderCircle size={24} className="spin" /></span></div>}
+              {!failed && !reviewing && job?.status !== "done" && <div className="spinner-wrap"><span><LoaderCircle size={24} className="spin" /></span></div>}
             </div>
             <div className="source-body">
               <h3>{fileName}</h3>
               <p>{job?.duration_seconds ? `Original Duration: ${clock(job.duration_seconds)}` : "Duration available after transcription"}</p>
               <dl className="kv">
                 <div><dt><Languages size={16} />Target Language</dt><dd>{job ? languageName(languages, job.target_language) : "—"}</dd></div>
-                <div><dt><Captions size={16} />Subtitles</dt><dd>Enabled (.srt)</dd></div>
-                <div><dt><Mic size={16} />Voice Model</dt><dd className="is-coral">{job?.voice_clone ? "Speaker Clone" : "Standard Voice"}</dd></div>
+                <div><dt><Captions size={16} />Subtitles</dt><dd>{job?.options.captions ? `SRT, VTT + burned-in (${job.options.captions})` : "SRT & VTT"}</dd></div>
+                <div><dt><Mic size={16} />Voice Model</dt><dd className="is-coral">{job?.options.voice_id ? "Saved Voice" : job?.voice_clone ? (job.options.multi_speaker ? "Speaker Clones" : "Speaker Clone") : "Standard Voice"}</dd></div>
+                {job?.options.formats.length ? <div><dt><Download size={16} />Formats</dt><dd>{job.options.formats.join(", ")}</dd></div> : null}
+                {job?.options.keep_background ? <div><dt><Info size={16} />Background audio</dt><dd>Kept</dd></div> : null}
               </dl>
             </div>
           </section>
@@ -189,7 +244,7 @@ export default function JobStatusPage() {
           <section className="card log-card" aria-labelledby="log-title">
             <div className="log-head">
               <h2 id="log-title"><Clock3 size={18} />Activity Log</h2>
-              <span className={`live-tag ${job && !failed && job.status !== "done" ? "is-on" : ""}`}>LIVE</span>
+              <span className={`live-tag ${job && !failed && !reviewing && job.status !== "done" ? "is-on" : ""}`}>LIVE</span>
             </div>
             <ol className="log-list" aria-live="polite">
               {log.length ? log.map((entry, index) => (

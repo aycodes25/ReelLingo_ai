@@ -132,7 +132,8 @@ export function allocate(plan, targets, duration, { trimToFit }) {
 
 async function resolveSource(request) {
   if (request.file) {
-    return { path: request.file.path, originalname: request.file.originalname, mimetype: request.file.mimetype, release: () => rm(request.file.path, { force: true }) };
+    const release = () => rm(request.file.path, { force: true });
+    return { path: request.file.path, originalname: request.file.originalname, mimetype: request.file.mimetype, release, releaseOnError: release };
   }
   if (request.body.upload_id) {
     try {
@@ -152,6 +153,7 @@ async function resolveSource(request) {
 router.post("/jobs", authenticate, workspace, jobLimiter, requireLivePipeline, upload.single("file"), asyncRoute(async (request, response) => {
   const source = await resolveSource(request);
   const sourceUrl = String(request.body.source_url || "").trim();
+  let succeeded = false;
   try {
     if (!source && !sourceUrl) throw new HttpError(400, "Choose a video to upload or paste a link.");
     if (sourceUrl) {
@@ -254,9 +256,13 @@ router.post("/jobs", authenticate, workspace, jobLimiter, requireLivePipeline, u
       created.push(await getJob(job.id));
     }
     const outputs = await Promise.all(created.map((job) => jobOutput(job)));
+    succeeded = true;
     response.status(201).json({ ...outputs[0], jobs: outputs });
   } finally {
-    await source?.release?.();
+    // A resumable upload survives a rejected request (e.g. "too long"), so the creator can trim or buy a credit
+    // without uploading again; unclaimed uploads expire after 24 hours.
+    if (succeeded) await source?.release?.();
+    else await source?.releaseOnError?.();
   }
 }));
 

@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { LoaderCircle } from "lucide-react";
-import { saveProfile, setStoredToken, getSessionUser } from "@/lib/api";
+import { applyReferralCode, clearReferral, getMe, setStoredToken, storedReferral } from "@/lib/api";
 
 // Supabase returns OAuth sessions in the URL fragment: #access_token=...&refresh_token=...
 export default function AuthCallbackPage() {
@@ -18,10 +18,17 @@ export default function AuthCallbackPage() {
       router.replace(`/login?error=oauth_failed&error_description=${encodeURIComponent(reason)}`);
       return;
     }
-    setStoredToken(accessToken);
-    const user = getSessionUser();
-    saveProfile({ email: user.email, name: user.name });
-    router.replace("/dashboard");
+    setStoredToken(accessToken, fragment.get("refresh_token"), Number(fragment.get("expires_in")) || null);
+    void (async () => {
+      // Creates the server-side profile, then links a referral code captured before sign-in.
+      await getMe().catch(() => undefined);
+      const referral = storedReferral();
+      if (referral) {
+        await applyReferralCode(referral).catch(() => undefined);
+        clearReferral();
+      }
+      router.replace("/dashboard");
+    })();
   }, [router]);
 
   return (

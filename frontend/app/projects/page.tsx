@@ -14,6 +14,7 @@ const FILTERS: { value: JobStatus | "all"; label: string }[] = [
   { value: "all", label: "All" },
   { value: "done", label: "Completed" },
   { value: "processing", label: "Processing" },
+  { value: "awaiting_review", label: "Needs review" },
   { value: "failed", label: "Failed" },
 ];
 
@@ -76,7 +77,7 @@ export default function ProjectsPage() {
       {jobs === null ? (
         <div className="project-list">{[0, 1, 2, 3].map((key) => <div key={key} className="skeleton" style={{ height: 82 }} />)}</div>
       ) : visible.length ? (
-        <ul className="project-list">{visible.map((job) => <ProjectRow key={job.id} job={job} languages={languages} />)}</ul>
+        <ul className="project-list">{visible.map((job) => <ProjectRow key={job.id} job={job} languages={languages} onRemoved={(id) => setJobs((current) => (current || []).filter((item) => item.id !== id))} />)}</ul>
       ) : (
         <div className="empty-state">
           <span><Video size={24} /></span>

@@ -8,7 +8,7 @@ import { createApiKey, listApiKeys, revokeApiKey } from "../auth.js";
 import { config } from "../config.js";
 import { many, one, query } from "../db.js";
 import { cloneFromSample, createSpeakerSample, deleteVoice } from "../dubbing.js";
-import { asyncRoute, authenticate, HttpError, workspace } from "../http.js";
+import { asyncRoute, authenticate, HttpError, toIsoTimestamp, workspace } from "../http.js";
 import { getLanguage } from "../languages.js";
 import { run } from "../media.js";
 import { emailConfigured, whatsappConfigured } from "../notify.js";
@@ -111,7 +111,8 @@ router.delete("/glossary/:id", authenticate, asyncRoute(async (request, response
 
 // ---------- Saved voices ----------
 async function listVoices(userId) {
-  return (await many("SELECT id, name, created_at, last_used_at FROM voices WHERE user_id = $1 ORDER BY id DESC", [userId])).map((row) => ({ ...row, id: Number(row.id) }));
+  return (await many("SELECT id, name, created_at, last_used_at FROM voices WHERE user_id = $1 ORDER BY id DESC", [userId]))
+    .map((row) => ({ ...row, id: Number(row.id), created_at: toIsoTimestamp(row.created_at), last_used_at: toIsoTimestamp(row.last_used_at) }));
 }
 
 router.get("/voices", authenticate, asyncRoute(async (request, response) => {

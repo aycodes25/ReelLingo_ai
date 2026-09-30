@@ -84,6 +84,12 @@ export function normalizePlan(row) {
     if (config.freeMaxVideoMinutes !== null) plan.max_video_minutes = config.freeMaxVideoMinutes;
   }
   plan.max_video_minutes = Math.min(plan.max_video_minutes, config.maxVideoMinutes);
+  // The quota lines are generated from the numbers so marketing copy can never disagree with the enforced limits.
+  plan.features = [
+    `${plan.videos_per_month} video${plan.videos_per_month === 1 ? "" : "s"} per month`,
+    `Up to ${plan.max_video_minutes} minutes per video`,
+    ...plan.features.filter((feature) => !/per month$|minutes per video$/i.test(feature)),
+  ];
   return plan;
 }
 

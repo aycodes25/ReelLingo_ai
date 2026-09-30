@@ -126,7 +126,7 @@ export async function jobOutput(job, { detail = true } = {}) {
       kind: output.kind, format: output.format || null, aspect: output.aspect || null, label: output.label,
       url: await sign(output, false), download_url: await sign(output, true),
     }))) : [],
-    input_video_url: detail && job.input_storage_path && !job.files_expired_at && job.status === "done" ? await getSignedUrl(job.input_storage_path) : null,
+    input_video_url: detail && job.input_storage_path && !job.files_expired_at && ["done", "awaiting_review", "failed"].includes(job.status) ? await getSignedUrl(job.input_storage_path) : null,
     transcript: detail ? job.transcript_json || null : null,
     translated_segments: detail ? job.translated_segments_json || null : null,
     has_transcript: Boolean(job.transcript_json?.length),

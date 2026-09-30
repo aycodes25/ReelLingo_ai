@@ -1,13 +1,14 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { Apple, Chrome, Eye, EyeOff, Github, LockKeyhole } from "lucide-react";
+import { Apple, Chrome, Eye, EyeOff, Facebook, Github, LockKeyhole } from "lucide-react";
 import { oauthUrl, type OAuthProvider } from "@/lib/api";
 
 const PROVIDERS: Record<OAuthProvider, { label: string; icon: ReactNode }> = {
   google: { label: "Google", icon: <Chrome size={18} color="#4285f4" /> },
   github: { label: "GitHub", icon: <Github size={18} /> },
   apple: { label: "Apple", icon: <Apple size={18} /> },
+  facebook: { label: "Facebook", icon: <Facebook size={18} color="#1877f2" /> },
 };
 
 export function OAuthButtons({ providers }: { providers: OAuthProvider[] }) {

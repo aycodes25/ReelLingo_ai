@@ -47,12 +47,12 @@ export function timestamp(seconds: number): string {
 }
 
 export const PIPELINE_STAGES = [
-  { key: "upload", label: "Upload", steps: ["queued", "extracting_audio"] },
+  { key: "upload", label: "Upload", steps: ["queued", "importing", "extracting_audio"] },
   { key: "transcription", label: "Transcription", steps: ["transcribing", "detecting_languages"] },
-  { key: "translation", label: "Translation", steps: ["translating"] },
-  { key: "dubbing", label: "Dubbing", steps: ["dubbing"] },
+  { key: "translation", label: "Translation", steps: ["translating", "review"] },
+  { key: "dubbing", label: "Dubbing", steps: ["separating", "dubbing", "mixing"] },
   { key: "merge", label: "Merge", steps: ["merging"] },
-  { key: "subtitle", label: "Subtitle", steps: ["generating_subtitles"] },
+  { key: "subtitle", label: "Export", steps: ["generating_subtitles", "rendering", "lip_syncing"] },
   { key: "download", label: "Download", steps: ["done"] },
 ] as const;
 
@@ -69,15 +69,33 @@ export function progressPercent(job: Job): number {
 
 export const STEP_MESSAGES: Record<string, string> = {
   queued: "Video received and queued for processing.",
+  importing: "Downloading your video from the link.",
   extracting_audio: "Extracting the audio track from your video.",
   transcribing: "Transcribing speech with timestamps.",
   detecting_languages: "Identifying the spoken languages.",
   translating: "Translating each segment with cultural context.",
+  review: "Translation ready for your review.",
+  separating: "Separating background music and effects from the voices.",
   dubbing: "Generating the dubbed voice track.",
-  merging: "Replacing the original audio with the dub.",
+  mixing: "Mixing the dub over the original background audio.",
+  merging: "Replacing the original speech with the dub.",
   generating_subtitles: "Writing synchronized subtitles.",
+  rendering: "Rendering captioned and resized versions.",
+  lip_syncing: "Matching lip movements to the new audio.",
   done: "Localization complete. Your files are ready.",
 };
+
+export function formatMoney(amount: number, currency: "USD" | "NGN" | string): string {
+  try {
+    return new Intl.NumberFormat(currency === "NGN" ? "en-NG" : "en-US", { style: "currency", currency, maximumFractionDigits: currency === "NGN" ? 0 : 2 }).format(amount);
+  } catch {
+    return `${currency} ${amount}`;
+  }
+}
+
+export function isInFlight(job: Job): boolean {
+  return job.status === "queued" || job.status === "processing";
+}
 
 export function segmentsToText(segments: TranscriptSegment[]): string {
   return segments.map((segment) => `[${timestamp(segment.start)}] ${segment.text}`).join("\n");

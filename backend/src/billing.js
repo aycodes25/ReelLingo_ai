@@ -41,6 +41,12 @@ async function stripe(path, { method = "GET", body } = {}) {
   return data;
 }
 
+function toIso(value) {
+  if (value instanceof Date) return value.toISOString();
+  const text = String(value || "");
+  return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text) ? `${text.replace(" ", "T")}Z` : text;
+}
+
 function addMonth(date = new Date()) {
   const next = new Date(date);
   next.setUTCMonth(next.getUTCMonth() + 1);
@@ -254,5 +260,5 @@ export async function cancelSubscription(billingId) {
 
 export async function paymentHistory(billingId) {
   return (await many("SELECT reference, provider, kind, plan_code, credit_pack, amount, currency, status, created_at FROM payments WHERE billing_id = $1 ORDER BY created_at DESC LIMIT 50", [billingId]))
-    .map((row) => ({ ...row, amount: Number(row.amount) }));
+    .map((row) => ({ ...row, amount: Number(row.amount), created_at: toIso(row.created_at) }));
 }

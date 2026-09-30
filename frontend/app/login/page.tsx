@@ -34,7 +34,8 @@ export default function LoginPage() {
     setErrorMessage(null);
     try {
       await login(email, password);
-      router.push("/dashboard");
+      const next = new URLSearchParams(window.location.search).get("next");
+      router.push(next && next.startsWith("/") && !next.startsWith("//") ? next : "/dashboard");
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Something went wrong");
     } finally {
@@ -49,7 +50,7 @@ export default function LoginPage() {
           <h1>Welcome back</h1>
           <p className="auth-sub">Log in to your account to continue creating and translating.</p>
 
-          <OAuthButtons providers={["google", "github"]} />
+          <OAuthButtons providers={["google", "facebook", "github"]} />
           <div className="divider">or continue with email</div>
 
           {health?.mode === "demo" && !health.capabilities.authentication && (

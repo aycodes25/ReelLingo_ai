@@ -3,10 +3,10 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowRight, ChevronDown, CircleAlert, Globe, Mail, Mic, UserRound, Video } from "lucide-react";
+import { ArrowRight, ChevronDown, CircleAlert, Gift, Globe, Mail, Mic, UserRound, Video } from "lucide-react";
 import BrandLogo from "@/components/BrandLogo";
 import { OAuthButtons, PasswordInput } from "@/components/AuthFields";
-import { getApiHealth, signup } from "@/lib/api";
+import { getApiHealth, rememberReferral, signup, storedReferral } from "@/lib/api";
 import type { ApiHealth } from "@/lib/types";
 
 const CREATOR_TYPES = ["Educational", "Lifestyle & Vlogging", "Tech & Reviews", "Entertainment & Comedy", "Music", "Food & Cooking", "Business & Finance", "News & Documentary", "Faith & Inspiration", "Other"];
@@ -21,11 +21,16 @@ export default function SignupPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [health, setHealth] = useState<ApiHealth | null>(null);
+  const [referral, setReferral] = useState<string | null>(null);
+  const [confirmEmail, setConfirmEmail] = useState(false);
   const signUpUnavailable = health?.mode === "live" && !health.capabilities.authentication;
   const isComplete = Boolean(name.trim() && email && password.length >= 8 && creatorType && agreed);
 
   useEffect(() => {
     getApiHealth().then(setHealth).catch(() => undefined);
+    const code = new URLSearchParams(window.location.search).get("ref");
+    if (code) rememberReferral(code);
+    setReferral(storedReferral());
   }, []);
 
   async function handleSubmit(event: FormEvent) {
@@ -34,7 +39,11 @@ export default function SignupPage() {
     setIsSubmitting(true);
     setErrorMessage(null);
     try {
-      await signup(email, password, { name: name.trim(), creatorType });
+      const session = await signup(email, password, { name: name.trim(), creatorType });
+      if (session.confirmation_required || !session.access_token) {
+        setConfirmEmail(true);
+        return;
+      }
       router.push("/dashboard");
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Something went wrong");
@@ -69,6 +78,8 @@ export default function SignupPage() {
             <div className="alert alert-warn" style={{ marginBottom: 20 }}><CircleAlert size={16} /><span><strong>Account sign-up is not configured.</strong> Add SUPABASE_URL and SUPABASE_KEY to backend/.env, then restart the backend.</span></div>
           )}
           {errorMessage && <div role="alert" className="alert alert-error" style={{ marginBottom: 20 }}><CircleAlert size={16} /><span>{errorMessage}</span></div>}
+          {referral && !confirmEmail && <div className="alert alert-success" style={{ marginBottom: 20 }}><Gift size={16} /><span><strong>You were invited by a creator.</strong> Finish your first dub and you both get a free bonus video.</span></div>}
+          {confirmEmail && <div role="status" className="alert alert-success" style={{ marginBottom: 20 }}><Mail size={16} /><span><strong>Check your inbox.</strong> We sent a confirmation link to {email}. Open it, then <Link href="/login" className="link">log in</Link>.</span></div>}
 
           <form onSubmit={handleSubmit} className="form-stack">
             <div className="field">
@@ -109,7 +120,7 @@ export default function SignupPage() {
           </form>
 
           <div className="divider">or continue with</div>
-          <OAuthButtons providers={["google", "apple"]} />
+          <OAuthButtons providers={["google", "facebook", "apple"]} />
 
           <p className="auth-switch">Already have an account? <Link href="/login" className="link-coral">Log in</Link></p>
         </section>

@@ -220,6 +220,29 @@ After changing `backend/.env`, apply the new values with `docker compose up -d -
 - Adding `OPENAI_API_KEY` automatically switches the default demo setting to live transcription and translation, even if `MOCK_MODE=true` remains in `.env`. A completed speaker-matched dub also requires `ELEVENLABS_API_KEY`; uploads are blocked rather than falling back to a generic voice when either key is missing. A saved ElevenLabs voice ID is not needed.
 - Local demo storage uses a file-backed WASM SQLite database. Hosted deployments use the configured Postgres `DATABASE_URL` and Supabase storage.
 - For Docker, run `docker compose up --build` from the repository root. Compose loads provider keys from `backend/.env` when present; never put credentials in `.env.example`.
-- Run backend tests with `npm --prefix backend test`.
-- Paystack/Stripe checkout is not implemented yet — the pricing tiers are modeled in the database
-  but billing is a stub.
+- Run backend tests with `npm --prefix backend test` and frontend tests with `npm --prefix frontend test`.
+- Plans and prices live in the `plans` table (seeded from `backend/src/plans.js`, matching `monetization.md`). The landing page, billing page and upload limits all read it. `FREE_VIDEOS_PER_MONTH` / `FREE_MAX_VIDEO_MINUTES` override the free plan, and `MAX_VIDEO_MINUTES` caps every plan (set it to 60 for Studio's full limit).
+
+---
+
+## ⚙️ Optional features and how to switch them on
+
+Every integration is off until its keys are set in `backend/.env` (see `backend/.env.example`). Settings → System status shows what's active.
+
+| Feature | What to set |
+|:---|:---|
+| Job queue & separate worker | Works out of the box (`WORKER_MODE=inline`). For scale, set `WORKER_MODE=off` and run `npm run worker` (or `docker compose --profile worker up`). Jobs survive restarts and resume from their last step. |
+| Keep background music/effects | Automatic. Best quality with Demucs (`docker compose build --build-arg INSTALL_DEMUCS=true backend`); otherwise ElevenLabs Voice Isolator or an FFmpeg fallback. `SEPARATION_PROVIDER` picks one. |
+| Multi-speaker dubbing | `ELEVENLABS_API_KEY` (uses ElevenLabs Scribe diarization). |
+| Payments (₦ and $) | `PAYSTACK_SECRET_KEY` and/or `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET`. Webhooks: `POST /billing/webhooks/paystack` and `/billing/webhooks/stripe`. Optional `PAYSTACK_PLAN_*` / `STRIPE_PRICE_*` for automatic renewals. |
+| Email notifications | `RESEND_API_KEY`, `EMAIL_FROM` |
+| WhatsApp notifications | `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` (+ `WHATSAPP_TEMPLATE` for messages outside a 24h chat) |
+| Lip-sync (Studio) | `SYNC_API_KEY` (sync.so) and Supabase storage |
+| Import from YouTube/TikTok/Instagram/Facebook | `yt-dlp` on the server (included in the Docker image). Drive, Dropbox and direct links need nothing. |
+| Publish to YouTube | Google OAuth client: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, redirect URI `${PUBLIC_API_URL}/integrations/youtube/callback` |
+| Admin dashboard | `ADMIN_EMAILS=you@example.com` |
+| Upload virus scanning | `CLAMAV_HOST` (`docker compose --profile security up`) |
+| Error tracking | `SENTRY_DSN` (backend), `NEXT_PUBLIC_SENTRY_DSN` (frontend) |
+| Signing & encryption | Set `APP_SECRET` to a long random string in production. |
+
+Other features need no configuration: resumable uploads, review-before-dub editor with per-line retranslation and cached re-dubs, glossary, translation tone, several target languages per upload, burned-in caption styles, VTT/ASS subtitles, 9:16 / 1:1 / 4:5 / 16:9 exports, audio-only (podcast) dubbing, AI titles/descriptions/hashtags, saved voices, public watch pages with before/after comparison, referrals, team workspaces, API keys (`/docs/api`), rate limiting, retention cleanup (`RETENTION_DAYS`) and live progress over SSE.
