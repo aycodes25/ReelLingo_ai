@@ -15,6 +15,7 @@ import { logger } from "./src/logger.js";
 import { emailConfigured, whatsappConfigured } from "./src/notify.js";
 import { billingProviders } from "./src/billing.js";
 import { scannerConfigured } from "./src/scan.js";
+import { publicSettings, startSettingsRefresh, stopSettingsRefresh } from "./src/settings.js";
 import { localPath, verifyLocalSignature } from "./src/storage.js";
 import { tusServer } from "./src/uploads.js";
 import { startWorker, stopWorker } from "./src/worker.js";
@@ -89,6 +90,7 @@ app.get("/health", (_request, response) => {
       virusScan: scannerConfigured(),
       worker: config.workerMode,
     },
+    settings: publicSettings(),
   });
 });
 
@@ -122,6 +124,7 @@ app.use((error, request, response, _next) => {
 
 export async function startServer() {
   await initializeDatabase();
+  startSettingsRefresh();
   if (config.workerMode === "inline") startWorker();
   const server = app.listen(config.port, () => {
     logger.info({ port: config.port, mode: config.mockMode ? "demo" : "live", worker: config.workerMode }, `ReelLingo API listening on http://localhost:${config.port}`);
@@ -129,6 +132,7 @@ export async function startServer() {
   const shutdown = async () => {
     server.close();
     // Running jobs aren't awaited: they'll be picked up again from their last saved step after restart.
+    stopSettingsRefresh();
     await Promise.race([stopWorker(), new Promise((resolveWait) => setTimeout(resolveWait, 5000))]);
     await closeDatabase();
     process.exit(0);

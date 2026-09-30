@@ -107,6 +107,11 @@ export default function NewProjectForm({ languages, usage, health, setupProblem 
     setIsSubmitting(false);
   }
 
+  // on(): switched on by the admin for everyone. allowed(): included in this user's plan.
+  const features = health?.settings?.features || {};
+  const on = (key: string) => features[key] !== false;
+  const allowed = (key: string) => plan?.permissions?.[key] !== false;
+  const lockHint = "Not in your plan — upgrade to use it";
   const lipSyncLocked = !plan?.lip_sync || !health?.capabilities.lipSync;
   const savedLocked = !plan?.saved_voices || !voices.length;
 
@@ -114,7 +119,9 @@ export default function NewProjectForm({ languages, usage, health, setupProblem 
     <>
       <div className="mode-tabs" role="tablist" aria-label="Video source">
         <button type="button" role="tab" aria-selected={mode === "upload"} className={mode === "upload" ? "is-active" : ""} onClick={() => setMode("upload")}><Upload size={15} />Upload a file</button>
-        <button type="button" role="tab" aria-selected={mode === "link"} className={mode === "link" ? "is-active" : ""} onClick={() => setMode("link")}><Link2 size={15} />Import from a link</button>
+        {on("link_import") && (
+          <button type="button" role="tab" aria-selected={mode === "link"} disabled={!allowed("link_import")} title={allowed("link_import") ? undefined : lockHint} className={mode === "link" ? "is-active" : ""} onClick={() => setMode("link")}><Link2 size={15} />Import from a link{!allowed("link_import") && <Lock size={12} />}</button>
+        )}
       </div>
 
       <div className="lang-row">
@@ -129,10 +136,10 @@ export default function NewProjectForm({ languages, usage, health, setupProblem 
             <input type="radio" name="voice" checked={voiceMode === "clone"} disabled={!plan?.voice_clone} onChange={() => setVoiceMode("clone")} />
             <span><strong>Clone the speaker{!plan?.voice_clone && <Lock size={12} />}</strong><small>{plan?.voice_clone ? "Sounds like the person in the video" : "Starter plan and up"}</small></span>
           </label>
-          <label className={`radio-card ${savedLocked ? "is-locked" : ""}`}>
+          {on("saved_voices") && <label className={`radio-card ${savedLocked ? "is-locked" : ""}`}>
             <input type="radio" name="voice" checked={voiceMode === "saved"} disabled={savedLocked} onChange={() => setVoiceMode("saved")} />
             <span><strong>My saved voice{!plan?.saved_voices && <Lock size={12} />}</strong><small>{!plan?.saved_voices ? "Creator plan and up" : voices.length ? "Same voice on every video" : <Link href="/settings#voices" className="link">Save your voice first</Link>}</small></span>
-          </label>
+          </label>}
           <label className="radio-card">
             <input type="radio" name="voice" checked={voiceMode === "standard"} onChange={() => setVoiceMode("standard")} />
             <span><strong>Standard AI voice</strong><small>A natural stock voice</small></span>
@@ -151,10 +158,10 @@ export default function NewProjectForm({ languages, usage, health, setupProblem 
       <details className="advanced">
         <summary>Advanced options<ChevronDown size={16} /></summary>
         <div className="advanced-grid">
-          <label className="toggle-row"><input type="checkbox" checked={review} onChange={(event) => setReview(event.target.checked)} /><span><strong>Review the translation before dubbing</strong><small>Fix names and slang line by line, then generate the voice.</small></span></label>
-          <label className="toggle-row"><input type="checkbox" checked={keepBackground} onChange={(event) => setKeepBackground(event.target.checked)} /><span><strong>Keep background music &amp; sound effects</strong><small>Only the voices are replaced.</small></span></label>
-          <label className="toggle-row"><input type="checkbox" checked={multiSpeaker} disabled={!health?.capabilities.multiSpeaker} onChange={(event) => setMultiSpeaker(event.target.checked)} /><span><strong>Multiple speakers</strong><small>Interviews, podcasts and skits: each person gets their own voice.</small></span></label>
-          <label className={`toggle-row ${lipSyncLocked ? "is-locked" : ""}`}><input type="checkbox" checked={lipSync} disabled={lipSyncLocked} onChange={(event) => setLipSync(event.target.checked)} /><span><strong>Lip-sync {lipSyncLocked && <Lock size={12} />}</strong><small>{!plan?.lip_sync ? "Studio plan" : !health?.capabilities.lipSync ? "Not configured on this server" : "Matches mouth movements to the new language."}</small></span></label>
+          {on("review") && <label className={`toggle-row ${allowed("review") ? "" : "is-locked"}`}><input type="checkbox" checked={review} disabled={!allowed("review")} onChange={(event) => setReview(event.target.checked)} /><span><strong>Review the translation before dubbing{!allowed("review") && <Lock size={12} />}</strong><small>{allowed("review") ? "Fix names and slang line by line, then generate the voice." : lockHint}</small></span></label>}
+          {on("keep_background") && <label className={`toggle-row ${allowed("keep_background") ? "" : "is-locked"}`}><input type="checkbox" checked={keepBackground && allowed("keep_background")} disabled={!allowed("keep_background")} onChange={(event) => setKeepBackground(event.target.checked)} /><span><strong>Keep background music &amp; sound effects{!allowed("keep_background") && <Lock size={12} />}</strong><small>{allowed("keep_background") ? "Only the voices are replaced." : lockHint}</small></span></label>}
+          {on("multi_speaker") && <label className={`toggle-row ${allowed("multi_speaker") ? "" : "is-locked"}`}><input type="checkbox" checked={multiSpeaker} disabled={!health?.capabilities.multiSpeaker || !allowed("multi_speaker")} onChange={(event) => setMultiSpeaker(event.target.checked)} /><span><strong>Multiple speakers{!allowed("multi_speaker") && <Lock size={12} />}</strong><small>{allowed("multi_speaker") ? "Interviews, podcasts and skits: each person gets their own voice." : lockHint}</small></span></label>}
+          {on("lip_sync") && <label className={`toggle-row ${lipSyncLocked ? "is-locked" : ""}`}><input type="checkbox" checked={lipSync} disabled={lipSyncLocked} onChange={(event) => setLipSync(event.target.checked)} /><span><strong>Lip-sync {lipSyncLocked && <Lock size={12} />}</strong><small>{!plan?.lip_sync ? lockHint : !health?.capabilities.lipSync ? "Not configured on this server" : "Matches mouth movements to the new language."}</small></span></label>}
 
           <div className="field">
             <label className="field-label" htmlFor="tone">Translation tone</label>
@@ -165,27 +172,27 @@ export default function NewProjectForm({ languages, usage, health, setupProblem 
               <ChevronDown size={17} />
             </div>
           </div>
-          <div className="field">
-            <label className="field-label" htmlFor="captions">Burned-in captions</label>
+          {on("captions") && <div className="field">
+            <label className="field-label" htmlFor="captions">Burned-in captions{!allowed("captions") && <Lock size={12} />}</label>
             <div className="select-wrap">
-              <select id="captions" className="select" value={captions} onChange={(event) => setCaptions(event.target.value)}>
-                <option value="">None (SRT/VTT files only)</option>
+              <select id="captions" className="select" value={captions} disabled={!allowed("captions")} onChange={(event) => setCaptions(event.target.value)}>
+                <option value="">{allowed("captions") ? "None (SRT/VTT files only)" : "Not in your plan"}</option>
                 {CAPTION_STYLES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
               </select>
               <ChevronDown size={17} />
             </div>
-          </div>
-          <div className="field advanced-wide">
-            <span className="field-label">Extra formats</span>
+          </div>}
+          {on("formats") && <div className="field advanced-wide">
+            <span className="field-label">Extra formats{!allowed("formats") && <> <Lock size={12} /> <small className="field-hint">{lockHint}</small></>}</span>
             <div className="format-chips">
               {FORMATS.map((item) => (
-                <label key={item.value} className={`format-chip ${formats.includes(item.value) ? "is-on" : ""}`}>
-                  <input type="checkbox" className="visually-hidden" checked={formats.includes(item.value)} onChange={(event) => setFormats(event.target.checked ? [...formats, item.value] : formats.filter((value) => value !== item.value))} />
+                <label key={item.value} className={`format-chip ${formats.includes(item.value) ? "is-on" : ""} ${allowed("formats") ? "" : "is-locked"}`}>
+                  <input type="checkbox" className="visually-hidden" disabled={!allowed("formats")} checked={formats.includes(item.value)} onChange={(event) => setFormats(event.target.checked ? [...formats, item.value] : formats.filter((value) => value !== item.value))} />
                   <b>{item.label}</b><small>{item.hint}</small>
                 </label>
               ))}
             </div>
-          </div>
+          </div>}
           <p className="advanced-note">Manage names and terms the translator must keep in your <Link href="/glossary" className="link">glossary</Link>.</p>
         </div>
       </details>

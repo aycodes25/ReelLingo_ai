@@ -1,10 +1,11 @@
 import express from "express";
+import { config } from "../config.js";
 import { planFor } from "../accounts.js";
 import {
   billingProviders, cancelSubscription, createCheckout, handlePaystackEvent, handleStripeEvent, paymentHistory, verifyPayment,
   verifyPaystackSignature, verifyStripeSignature,
 } from "../billing.js";
-import { asyncRoute, authenticate, HttpError, workspace } from "../http.js";
+import { asyncRoute, authenticate, blockDuringMaintenance, HttpError, workspace } from "../http.js";
 import { logger } from "../logger.js";
 import { CREDIT_PACKS, listPlans } from "../plans.js";
 
@@ -17,7 +18,7 @@ function requireBillingRole(request) {
 }
 
 router.get("/plans", asyncRoute(async (_request, response) => {
-  response.json({ plans: await listPlans(), packs: CREDIT_PACKS, providers: billingProviders() });
+  response.json({ plans: await listPlans(), packs: config.featurePayg ? CREDIT_PACKS : [], providers: billingProviders() });
 }));
 
 router.get("/billing", authenticate, workspace, asyncRoute(async (request, response) => {
@@ -29,14 +30,14 @@ router.get("/billing", authenticate, workspace, asyncRoute(async (request, respo
     credits: plan.credits,
     usage: { videos_this_month: plan.videosThisMonth, max_videos_per_month: plan.maxVideosPerMonth, minutes_this_month: plan.minutesThisMonth },
     plans: await listPlans(),
-    packs: CREDIT_PACKS,
+    packs: config.featurePayg ? CREDIT_PACKS : [],
     providers: billingProviders(),
     payments: await paymentHistory(plan.billingId),
     workspace: request.workspace.teamId ? { team_id: request.workspace.teamId, role: request.workspace.role } : null,
   });
 }));
 
-router.post("/billing/checkout", authenticate, workspace, asyncRoute(async (request, response) => {
+router.post("/billing/checkout", authenticate, blockDuringMaintenance, workspace, asyncRoute(async (request, response) => {
   requireBillingRole(request);
   if (!request.user.email) throw new HttpError(400, "Your account needs an email address to pay.");
   const provider = request.body?.provider === "stripe" ? "stripe" : "paystack";

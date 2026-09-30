@@ -10,10 +10,11 @@ const POLL_INTERVAL_MS = 10_000;
 const MAX_WAIT_MS = 45 * 60 * 1000;
 
 export function lipSyncAvailable() {
-  return Boolean(config.syncApiKey) && hasRemoteStorage();
+  return Boolean(config.syncApiKey) && hasRemoteStorage() && config.featureLipSync;
 }
 
 export function lipSyncUnavailableReason() {
+  if (!config.featureLipSync) return "Lip-sync is currently turned off.";
   if (!config.syncApiKey) return "Lip-sync needs SYNC_API_KEY (sync.so) in backend/.env.";
   if (!hasRemoteStorage()) return "Lip-sync needs Supabase storage so the lip-sync service can fetch your video.";
   return null;

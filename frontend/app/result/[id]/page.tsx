@@ -10,7 +10,7 @@ import {
 import AppShell from "@/components/AppShell";
 import VideoPlayer, { type VideoPlayerHandle } from "@/components/VideoPlayer";
 import {
-  deleteJob, getIntegrations, getJob, getJobs, getLanguages, getVoices, publishToYoutube, saveVoiceFromJob, shareJob,
+  deleteJob, getApiHealth, getIntegrations, getJob, getJobs, getLanguages, getVoices, publishToYoutube, saveVoiceFromJob, shareJob,
 } from "@/lib/api";
 import {
   clock, downloadText, languageName, projectFileName, projectTitle, relativeTime, segmentsToText, sourceLabel, timestamp,
@@ -42,6 +42,7 @@ export default function ResultPage() {
   const [ytOutput, setYtOutput] = useState("video");
   const [voiceSlots, setVoiceSlots] = useState<{ used: number; limit: number } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [features, setFeatures] = useState<Record<string, boolean>>({});
   const playerRef = useRef<VideoPlayerHandle>(null);
 
   useEffect(() => {
@@ -52,6 +53,7 @@ export default function ResultPage() {
     getJobs(12).then((items) => setRecent(items.filter((item) => item.id !== jobId && item.status === "done").slice(0, 3))).catch(() => undefined);
     getIntegrations().then((result) => setYoutube(result.youtube)).catch(() => undefined);
     getVoices().then((result) => setVoiceSlots({ used: result.voices.length, limit: result.limit })).catch(() => undefined);
+    getApiHealth().then((health) => setFeatures(health.settings?.features || {})).catch(() => undefined);
   }, [jobId]);
 
   // Poll while a YouTube upload is running.
@@ -286,7 +288,7 @@ export default function ResultPage() {
             )}
           </section>
 
-          <section className="card share-card" aria-labelledby="share-title">
+          {features.public_share !== false && <section className="card share-card" aria-labelledby="share-title">
             <h2 id="share-title">Share with World</h2>
             <label className="toggle-row" style={{ marginBottom: 14 }}>
               <input type="checkbox" checked={Boolean(job.share_slug)} disabled={busy === "share"} onChange={(event) => void toggleShare(event.target.checked)} />
@@ -308,9 +310,9 @@ export default function ResultPage() {
                 </div>
               </>
             )}
-          </section>
+          </section>}
 
-          {job.media_type !== "audio" && (
+          {job.media_type !== "audio" && features.youtube !== false && (
             <section className="card card-pad" aria-labelledby="youtube-title">
               <h2 id="youtube-title" style={{ display: "flex", gap: 8, alignItems: "center" }}><Youtube size={20} color="#ff0000" />Publish to YouTube</h2>
               {job.youtube?.status === "published" ? (
@@ -345,7 +347,7 @@ export default function ResultPage() {
             </section>
           )}
 
-          <section className="tip-card">
+          {features.saved_voices !== false && <section className="tip-card">
             <span><Mic size={15} />SAVE THIS VOICE</span>
             {voiceSlots && voiceSlots.limit > 0 ? (
               <>
@@ -361,7 +363,7 @@ export default function ResultPage() {
             ) : (
               <><p>Keep your cloned voice and reuse it on every video.</p><Link href="/billing">Available on Creator &amp; Studio</Link></>
             )}
-          </section>
+          </section>}
 
           <section className="tip-card">
             <span><Globe size={15} />PRO TIP</span>

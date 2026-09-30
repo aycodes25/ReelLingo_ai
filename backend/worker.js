@@ -1,11 +1,13 @@
 import { config } from "./src/config.js";
 import { closeDatabase, initializeDatabase } from "./src/database.js";
 import { logger } from "./src/logger.js";
+import { startSettingsRefresh } from "./src/settings.js";
 import { startWorker, stopWorker } from "./src/worker.js";
 
 // Standalone worker: run with WORKER_MODE=off on the API so processing scales separately from web traffic.
 await initializeDatabase();
 startWorker();
+startSettingsRefresh();
 logger.info({ concurrency: config.workerConcurrency }, "ReelLingo worker running");
 
 const shutdown = async () => {

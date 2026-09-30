@@ -1,9 +1,10 @@
 import express from "express";
 import { planFor } from "../accounts.js";
-import { asyncRoute, authenticate, HttpError } from "../http.js";
+import { asyncRoute, authenticate, HttpError, requireFeature } from "../http.js";
 import { acceptInvite, createTeam, getMembership, getTeam, inviteMember, listMembers, listTeamsFor, removeMember, setMemberRole } from "../teams.js";
 
 const router = express.Router();
+router.use("/teams", requireFeature("featureTeams", "Team workspaces"));
 
 async function membership(request) {
   const teamId = Number(request.params.teamId);

@@ -4,12 +4,13 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
-import { consumeCredit, listGlossary, planFor, releaseCredit } from "../accounts.js";
+import { consumeCredit, listGlossary, planFor } from "../accounts.js";
 import { config } from "../config.js";
 import { jobCosts } from "../costs.js";
 import { countInputUsers, createJob, getJob, listJobs, updateJob } from "../database.js";
 import { one } from "../db.js";
-import { asyncRoute, authenticate, HttpError, jobLimiter, jobOutput, requireLivePipeline, workspace } from "../http.js";
+import { asyncRoute, authenticate, blockDuringMaintenance, HttpError, jobLimiter, jobOutput, requireLivePipeline, workspace } from "../http.js";
+import { purgeJob } from "../jobfiles.js";
 import { classifyImportUrl } from "../importer.js";
 import { getLanguage } from "../languages.js";
 import { lipSyncUnavailableReason } from "../lipsync.js";
@@ -17,7 +18,7 @@ import { logger } from "../logger.js";
 import { getMediaInfo } from "../media.js";
 import { ASPECTS, CAPTION_STYLES } from "../render.js";
 import { scanFile } from "../scan.js";
-import { deleteFiles, listFiles, uploadFile } from "../storage.js";
+import { uploadFile } from "../storage.js";
 import { getMembership } from "../teams.js";
 import { TONES, translateLine } from "../translation.js";
 import { claimUpload } from "../uploads.js";
@@ -150,7 +151,7 @@ async function resolveSource(request) {
   return null;
 }
 
-router.post("/jobs", authenticate, workspace, jobLimiter, requireLivePipeline, upload.single("file"), asyncRoute(async (request, response) => {
+router.post("/jobs", authenticate, blockDuringMaintenance, workspace, jobLimiter, requireLivePipeline, upload.single("file"), asyncRoute(async (request, response) => {
   const source = await resolveSource(request);
   const sourceUrl = String(request.body.source_url || "").trim();
   let succeeded = false;
@@ -191,8 +192,22 @@ router.post("/jobs", authenticate, workspace, jobLimiter, requireLivePipeline, u
       trim_to_fit: bool(request.body.trim_to_fit),
       watermark: plan.plan.watermark,
     };
+    const permissions = plan.plan.permissions || {};
+    // Each option must be switched on globally (Admin → Settings) and included in the user's plan (Admin → Plans).
+    const check = (requested, globalFlag, permission, label) => {
+      if (!requested) return;
+      if (!config[globalFlag]) throw new HttpError(403, `${label} is currently turned off.`, { code: "feature_disabled", feature: permission });
+      if (permission && permissions[permission] === false) throw new HttpError(402, `${label} isn't included in your ${plan.plan.name} plan. Upgrade to use it.`, { code: "feature", feature: permission });
+    };
+    check(Boolean(sourceUrl), "featureLinkImport", "link_import", "Importing from a link");
+    check(options.review, "featureReview", "review", "Reviewing before dubbing");
+    check(options.multi_speaker, "featureMultiSpeaker", "multi_speaker", "Multi-speaker dubbing");
+    check(Boolean(options.captions), "featureCaptions", "captions", "Burned-in captions");
+    check(options.formats.length > 0, "featureFormats", "formats", "Extra formats");
+    if (options.keep_background && (!config.featureBackground || permissions.keep_background === false)) options.keep_background = false;
     if (options.lip_sync) {
-      if (!plan.plan.lip_sync) throw new HttpError(402, "Lip-sync is included in the Studio plan.", { code: "feature", feature: "lip_sync" });
+      check(true, "featureLipSync", null, "Lip-sync");
+      if (!plan.plan.lip_sync) throw new HttpError(402, `Lip-sync isn't included in your ${plan.plan.name} plan.`, { code: "feature", feature: "lip_sync" });
       const reason = lipSyncUnavailableReason();
       if (reason) throw new HttpError(503, reason);
     }
@@ -202,7 +217,8 @@ router.post("/jobs", authenticate, workspace, jobLimiter, requireLivePipeline, u
     if (voiceMode === "saved") {
       const voice = await one("SELECT id FROM voices WHERE id = $1 AND user_id = $2", [Number(request.body.voice_id), request.userId]);
       if (!voice) throw new HttpError(400, "Choose one of your saved voices.");
-      if (!plan.plan.saved_voices) throw new HttpError(402, "Saved voices are included in the Creator and Studio plans.", { code: "feature", feature: "saved_voices" });
+      check(true, "featureSavedVoices", null, "Saved voices");
+      if (!plan.plan.saved_voices) throw new HttpError(402, `Saved voices aren't included in your ${plan.plan.name} plan.`, { code: "feature", feature: "saved_voices" });
       options.voice_id = Number(voice.id);
       voiceClone = true;
     }
@@ -215,6 +231,9 @@ router.post("/jobs", authenticate, workspace, jobLimiter, requireLivePipeline, u
       const probed = await probe(source.path);
       duration = probed.duration;
       mediaType = probed.hasVideo ? "video" : "audio";
+      if (mediaType === "audio" && permissions.audio_only === false) {
+        throw new HttpError(402, `Audio-only dubbing isn't included in your ${plan.plan.name} plan.`, { code: "feature", feature: "audio_only" });
+      }
     }
 
     const { allocations, trimSeconds } = allocate(plan, targets, duration, { trimToFit: options.trim_to_fit });
@@ -399,21 +418,21 @@ router.post("/jobs/:jobId/retry", authenticate, asyncRoute(async (request, respo
 router.delete("/jobs/:jobId", authenticate, asyncRoute(async (request, response) => {
   const job = await loadAccessibleJob(request);
   if (job.status === "processing") throw new HttpError(409, "This project is being processed right now. Delete it once it finishes.");
-  const paths = await listFiles(`jobs/${job.id}`);
-  if (job.input_storage_path && await countInputUsers(job.input_storage_path, job.id) === 0) paths.push(job.input_storage_path);
-  await deleteFiles(paths);
-  if (job.status !== "done") await releaseCredit(job.id);
-  await updateJob(job.id, {
-    deleted_at: new Date().toISOString(), files_expired_at: new Date().toISOString(), share_slug: null, outputs_json: null,
-    output_video_path: null, output_srt_path: null, clips_json: null, status: job.status === "queued" ? "failed" : job.status,
-  });
+  await purgeJob(job);
   response.status(204).end();
 }));
+
+async function requirePlanPermission(request, job, globalFlag, permission, label) {
+  if (!config[globalFlag]) throw new HttpError(403, `${label} is currently turned off.`, { code: "feature_disabled" });
+  const plan = await planFor({ userId: request.userId, teamId: job.team_id });
+  if (plan.plan.permissions?.[permission] === false) throw new HttpError(402, `${label} isn't included in your ${plan.plan.name} plan.`, { code: "feature", feature: permission });
+}
 
 /** Turns the public watch page on or off. Watch pages sign fresh video links on every visit, so they never expire. */
 router.post("/jobs/:jobId/share", authenticate, asyncRoute(async (request, response) => {
   const job = await loadAccessibleJob(request);
   if (job.status !== "done") throw new HttpError(409, "Only finished projects can be shared.");
+  if (request.body?.enabled !== false) await requirePlanPermission(request, job, "featurePublicShare", "public_share", "Public watch pages");
   const enabled = request.body?.enabled !== false;
   const slug = enabled ? job.share_slug || randomBytes(8).toString("base64url") : null;
   response.json(await jobOutput(await updateJob(job.id, { share_slug: slug, share_original: Boolean(request.body?.include_original ?? true) })));
@@ -423,6 +442,7 @@ router.post("/jobs/:jobId/publish/youtube", authenticate, asyncRoute(async (requ
   const job = await loadAccessibleJob(request);
   if (job.status !== "done") throw new HttpError(409, "Only finished projects can be published.");
   if (job.media_type === "audio") throw new HttpError(400, "Audio-only projects can't be published to YouTube.");
+  await requirePlanPermission(request, job, "featureYoutube", "youtube", "Publishing to YouTube");
   const outputs = job.outputs_json || [];
   const wanted = String(request.body?.output || "video");
   const output = outputs.find((item) => (wanted.startsWith("format:") ? item.kind === "format" && item.aspect === wanted.slice(7) : item.kind === wanted)) || outputs.find((item) => item.kind === "video");

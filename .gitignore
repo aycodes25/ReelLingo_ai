@@ -13,3 +13,8 @@ __pycache__/
 *.tsbuildinfo
 storage/
 coverage/
+
+# Local secrets and backups
+.env.*
+!.env.example
+!.env.local.example

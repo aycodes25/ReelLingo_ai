@@ -5,13 +5,19 @@ import { jobCosts } from "../costs.js";
 import { getJob, updateJob } from "../database.js";
 import { dbTime, many } from "../db.js";
 import { asyncRoute, authenticate, HttpError, jobOutput, requireAdmin, toIsoTimestamp } from "../http.js";
-import { getPlan } from "../plans.js";
+import {
+  createUser, deleteTeam, deleteUser, emailUser, grantCredits, listAllPayments, listAllTeams, listUsers, revokeCredit, syncAuthUsers, updateUser, userDetail,
+} from "../admin.js";
+import { config } from "../config.js";
+import { purgeJob } from "../jobfiles.js";
+import { createPlan, deletePlan, getPlan, listRawPlans, PERMISSIONS, updatePlan } from "../plans.js";
+import { listSettings, updateSettings } from "../settings.js";
 
 const router = express.Router();
 router.use("/admin", authenticate, requireAdmin);
 
-// Rough conversion for margin estimates only; set NGN_PER_USD to your current rate.
-const NGN_PER_USD = Number(process.env.NGN_PER_USD || 1600);
+// Naira→USD rate for margin estimates comes from Admin → Settings (NGN_PER_USD in .env by default).
+
 
 function seconds(from, to) {
   const start = Date.parse(toIsoTimestamp(from));
@@ -43,7 +49,7 @@ router.get("/admin/overview", asyncRoute(async (request, response) => {
   }
   const finished = (byStatus.done || 0) + (byStatus.failed || 0);
   const totalCost = costs.reduce((sum, row) => sum + Number(row.cost), 0);
-  const revenueUsd = payments.reduce((sum, row) => sum + (row.currency === "NGN" ? Number(row.amount) / 100 / NGN_PER_USD : Number(row.amount) / 100), 0);
+  const revenueUsd = payments.reduce((sum, row) => sum + (row.currency === "NGN" ? Number(row.amount) / 100 / config.ngnPerUsd : Number(row.amount) / 100), 0);
   processing.sort((a, b) => a - b);
   response.json({
     days,
@@ -61,7 +67,7 @@ router.get("/admin/overview", asyncRoute(async (request, response) => {
       estimated_usd: Math.round(revenueUsd * 100) / 100,
       by_currency: payments.map((row) => ({ currency: row.currency, amount: Number(row.amount) / 100, count: Number(row.count) })),
       margin_usd: Math.round((revenueUsd - totalCost) * 100) / 100,
-      ngn_per_usd: NGN_PER_USD,
+      ngn_per_usd: config.ngnPerUsd,
     },
   });
 }));
@@ -103,6 +109,111 @@ router.post("/admin/subscriptions", asyncRoute(async (request, response) => {
   end.setUTCMonth(end.getUTCMonth() + months);
   await activateSubscription(billingId, plan.code, { provider: "manual", periodEnd: end });
   response.json({ billing_id: billingId, plan: plan.code, current_period_end: end.toISOString() });
+}));
+
+/** Runs an admin action, turning validation errors into 400s (404s pass through). */
+function action(handler) {
+  return asyncRoute(async (request, response) => {
+    try {
+      await handler(request, response);
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      throw new HttpError(error.status || 400, error.message);
+    }
+  });
+}
+
+// ---------- Jobs ----------
+router.delete("/admin/jobs/:jobId", action(async (request, response) => {
+  const job = await getJob(Number(request.params.jobId));
+  if (!job) throw new HttpError(404, "Job not found.");
+  await purgeJob(job, { hard: request.query.hard === "1" });
+  response.status(204).end();
+}));
+
+// ---------- Users ----------
+router.get("/admin/users", action(async (request, response) => {
+  if (request.query.sync === "1") await syncAuthUsers();
+  response.json(await listUsers({
+    search: String(request.query.q || ""), plan: String(request.query.plan || ""), status: String(request.query.status || ""),
+    page: Math.max(1, Number(request.query.page) || 1), perPage: Math.min(Math.max(Number(request.query.per_page) || 50, 1), 200),
+  }));
+}));
+
+router.post("/admin/users", action(async (request, response) => {
+  response.status(201).json(await createUser(request.body || {}, request.user));
+}));
+
+router.get("/admin/users/:userId", action(async (request, response) => {
+  response.json(await userDetail(String(request.params.userId)));
+}));
+
+router.patch("/admin/users/:userId", action(async (request, response) => {
+  response.json(await updateUser(String(request.params.userId), request.body || {}, request.user));
+}));
+
+router.delete("/admin/users/:userId", action(async (request, response) => {
+  response.json(await deleteUser(String(request.params.userId), request.user));
+}));
+
+router.post("/admin/users/:userId/credits", action(async (request, response) => {
+  await grantCredits(String(request.params.userId), request.body?.max_minutes, request.body?.count);
+  response.status(201).json(await userDetail(String(request.params.userId)));
+}));
+
+router.delete("/admin/credits/:creditId", action(async (request, response) => {
+  await revokeCredit(Number(request.params.creditId));
+  response.status(204).end();
+}));
+
+router.post("/admin/users/:userId/email", action(async (request, response) => {
+  await emailUser(String(request.params.userId), request.body?.subject, request.body?.message);
+  response.json({ sent: true });
+}));
+
+// ---------- Plans ----------
+router.get("/admin/plans", action(async (_request, response) => {
+  const plans = await listRawPlans();
+  const counts = new Map((await many(
+    "SELECT tier, COUNT(*) AS count FROM subscriptions WHERE status <> 'canceled' AND (current_period_end IS NULL OR current_period_end > $1) GROUP BY tier",
+    [dbTime()],
+  )).map((row) => [row.tier, Number(row.count)]));
+  response.json({ plans: plans.map((plan) => ({ ...plan, subscribers: counts.get(plan.code) || 0 })), permissions: PERMISSIONS, max_video_minutes: config.maxVideoMinutes });
+}));
+
+router.post("/admin/plans", action(async (request, response) => {
+  response.status(201).json(await createPlan(request.body || {}));
+}));
+
+router.put("/admin/plans/:code", action(async (request, response) => {
+  response.json(await updatePlan(String(request.params.code), request.body || {}));
+}));
+
+router.delete("/admin/plans/:code", action(async (request, response) => {
+  response.json(await deletePlan(String(request.params.code), String(request.query.move_to || "free")));
+}));
+
+// ---------- Settings ----------
+router.get("/admin/settings", action(async (_request, response) => {
+  response.json(listSettings());
+}));
+
+router.put("/admin/settings", action(async (request, response) => {
+  response.json(await updateSettings(request.body || {}, request.userId));
+}));
+
+// ---------- Teams & payments ----------
+router.get("/admin/teams", action(async (_request, response) => {
+  response.json(await listAllTeams());
+}));
+
+router.delete("/admin/teams/:teamId", action(async (request, response) => {
+  await deleteTeam(Number(request.params.teamId));
+  response.status(204).end();
+}));
+
+router.get("/admin/payments", action(async (request, response) => {
+  response.json(await listAllPayments({ status: String(request.query.status || "") }));
 }));
 
 export default router;

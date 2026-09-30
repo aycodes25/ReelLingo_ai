@@ -22,12 +22,12 @@ const ADOPTION = [
 const API = process.env.API_INTERNAL_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 // Used only if the API is unreachable while the page renders; the plans table is the source of truth.
-const FALLBACK_PLANS: Plan[] = [
+const FALLBACK_PLANS: Plan[] = ([
   { code: "free", name: "Free", blurb: "Try ReelLingo on a short clip.", price_usd: 0, price_ngn: 0, videos_per_month: 1, max_video_minutes: 3, voice_clone: false, watermark: true, priority: 0, max_targets: 1, lip_sync: false, api_access: false, team_seats: 1, saved_voices: 0, featured: false, features: ["1 video per month", "Up to 3 minutes per video", "Standard AI voices", "ReelLingo watermark", "SRT & VTT subtitles"] },
   { code: "starter", name: "Starter", blurb: "For hobbyists and TikTokers.", price_usd: 10, price_ngn: 16000, videos_per_month: 5, max_video_minutes: 10, voice_clone: true, watermark: false, priority: 1, max_targets: 2, lip_sync: false, api_access: false, team_seats: 1, saved_voices: 0, featured: false, features: ["5 videos per month", "Up to 10 minutes per video", "Voice cloning", "No watermark", "2 languages per upload", "Burned-in captions"] },
   { code: "creator", name: "Creator", blurb: "The sweet spot for YouTubers.", price_usd: 25, price_ngn: 40000, videos_per_month: 10, max_video_minutes: 25, voice_clone: true, watermark: false, priority: 2, max_targets: 4, lip_sync: false, api_access: false, team_seats: 1, saved_voices: 1, featured: true, features: ["10 videos per month", "Up to 25 minutes per video", "Premium voice cloning + saved voice", "Priority processing", "4 languages per upload", "Multi-speaker dubbing", "Publish to YouTube"] },
   { code: "studio", name: "Studio", blurb: "For media houses and Nollywood.", price_usd: 80, price_ngn: 130000, videos_per_month: 30, max_video_minutes: 60, voice_clone: true, watermark: false, priority: 3, max_targets: 10, lip_sync: true, api_access: true, team_seats: 5, saved_voices: 5, featured: false, features: ["30 videos per month", "Up to 60 minutes per video", "Lip-sync", "Highest priority queue", "10 languages per upload", "Team workspace (5 seats)", "API access", "Dedicated WhatsApp support"] },
-];
+] as Omit<Plan, "permissions" | "contact_sales" | "public" | "sort">[]).map((plan, sort) => ({ ...plan, permissions: {}, contact_sales: false, public: true, sort }));
 
 async function loadPlans(): Promise<{ plans: Plan[]; packs: CreditPack[] }> {
   try {
@@ -41,6 +41,7 @@ async function loadPlans(): Promise<{ plans: Plan[]; packs: CreditPack[] }> {
 
 export default async function LandingPage() {
   const { plans, packs } = await loadPlans();
+  const support = process.env.NEXT_PUBLIC_SUPPORT_EMAIL || "sales@reellingo.ai";
   return (
     <div>
       <header className="site-header">
@@ -197,10 +198,18 @@ export default async function LandingPage() {
                   {plan.featured && <span className="plan-flag">MOST POPULAR</span>}
                   <h3>{plan.name}</h3>
                   <p>{plan.blurb}</p>
-                  <div className="plan-price">{plan.price_usd ? formatMoney(plan.price_usd, "USD") : "$0"}<small>/month</small></div>
-                  {plan.price_ngn > 0 && <p className="plan-local">or {formatMoney(plan.price_ngn, "NGN")}/month with Paystack</p>}
+                  {plan.contact_sales ? (
+                    <div className="plan-price">Custom</div>
+                  ) : (
+                    <>
+                      <div className="plan-price">{plan.price_usd ? formatMoney(plan.price_usd, "USD") : "$0"}<small>/month</small></div>
+                      {plan.price_ngn > 0 && <p className="plan-local">or {formatMoney(plan.price_ngn, "NGN")}/month with Paystack</p>}
+                    </>
+                  )}
                   <ul className="check-list">{plan.features.map((feature) => <li key={feature}><CircleCheck size={18} />{feature}</li>)}</ul>
-                  <Link href={plan.price_usd ? "/signup?plan=" + plan.code : "/signup"} className={`btn btn-block ${plan.featured ? "btn-primary" : "btn-outline"}`}>{plan.price_usd ? `Choose ${plan.name}` : "Start free"}</Link>
+                  {plan.contact_sales
+                    ? <a href={`mailto:${support}?subject=${encodeURIComponent(`${plan.name} plan`)}`} className="btn btn-block btn-outline">Contact sales</a>
+                    : <Link href={plan.price_usd ? "/signup?plan=" + plan.code : "/signup"} className={`btn btn-block ${plan.featured ? "btn-primary" : "btn-outline"}`}>{plan.price_usd ? `Choose ${plan.name}` : "Start free"}</Link>}
                 </article>
               ))}
             </div>

@@ -15,6 +15,32 @@ function subscriptionActive(subscription) {
   return new Date(subscription.current_period_end).getTime() > Date.now() - 3 * 24 * 3600 * 1000;
 }
 
+// Per-account limits an admin can set on top of the plan (e.g. an enterprise customer with custom terms).
+export const OVERRIDE_NUMBERS = ["videos_per_month", "max_video_minutes", "max_targets", "team_seats", "saved_voices", "priority"];
+export const OVERRIDE_BOOLS = ["voice_clone", "watermark", "lip_sync", "api_access"];
+
+export function parseOverrides(raw) {
+  if (!raw) return null;
+  try {
+    const value = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return value && typeof value === "object" && Object.keys(value).length ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function applyOverrides(plan, overrides) {
+  for (const field of OVERRIDE_NUMBERS) {
+    if (overrides[field] !== undefined && overrides[field] !== null && overrides[field] !== "") plan[field] = Number(overrides[field]);
+  }
+  for (const field of OVERRIDE_BOOLS) {
+    if (typeof overrides[field] === "boolean") plan[field] = overrides[field];
+  }
+  if (overrides.permissions && typeof overrides.permissions === "object") plan.permissions = { ...plan.permissions, ...overrides.permissions };
+  plan.max_video_minutes = Math.min(plan.max_video_minutes, config.maxVideoMinutes);
+  plan.custom = true;
+}
+
 /** The plan, limits and usage that apply to an upload in this workspace. */
 export async function planFor({ userId, teamId = null }) {
   const billingId = billingIdFor({ userId, teamId });
@@ -34,6 +60,8 @@ export async function planFor({ userId, teamId = null }) {
     plan.voice_clone = true;
     plan.watermark = false;
   }
+  const overrides = parseOverrides(subscription?.overrides_json);
+  if (overrides) applyOverrides(plan, overrides);
   return {
     billingId,
     tier: plan.code,
@@ -100,6 +128,11 @@ function normalizeProfile(row) {
     referral_code: row.referral_code,
     referred_by: row.referred_by || null,
     referral_rewarded: toBool(row.referral_rewarded),
+    is_admin: toBool(row.is_admin),
+    disabled: toBool(row.disabled),
+    admin_notes: row.admin_notes || "",
+    created_at: row.created_at,
+    last_seen_at: row.last_seen_at,
   };
 }
 
@@ -145,6 +178,7 @@ export async function updateProfile(userId, changes) {
 /** Links a new user to whoever referred them. Rewards are paid once the new user finishes their first dub. */
 export async function applyReferral(userId, code) {
   const normalized = String(code || "").trim().toUpperCase();
+  if (!config.featureReferrals) return { applied: false, reason: "Referral rewards are currently turned off." };
   if (!normalized) return { applied: false, reason: "No referral code." };
   const profile = await getProfile(userId);
   if (!profile) return { applied: false, reason: "Profile not found." };
@@ -159,6 +193,7 @@ export async function applyReferral(userId, code) {
 
 /** Pays the referral bonus to both people the first time the referred user completes a dub. */
 export async function rewardReferralIfDue(userId) {
+  if (!config.featureReferrals) return false;
   const profile = await getProfile(userId);
   if (!profile?.referred_by || profile.referral_rewarded) return false;
   const claimed = await query("UPDATE profiles SET referral_rewarded = $1 WHERE user_id = $2 AND referral_rewarded = $3", [true, userId, false]);

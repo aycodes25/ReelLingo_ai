@@ -65,6 +65,7 @@ export const SCHEMA = [
       ["voice_clone", "bool"], ["watermark", "bool"], ["priority", "int", "NOT NULL DEFAULT 0"], ["max_targets", "int", "NOT NULL DEFAULT 1"],
       ["lip_sync", "bool"], ["api_access", "bool"], ["team_seats", "int", "NOT NULL DEFAULT 1"], ["saved_voices", "int", "NOT NULL DEFAULT 0"],
       ["features_json", "text"], ["sort", "int", "NOT NULL DEFAULT 0"], ["public", "bool", "true"],
+      ["permissions_json", "text"], ["contact_sales", "bool"],
     ],
   },
   {
@@ -74,7 +75,7 @@ export const SCHEMA = [
       ["videos_used_this_month", "int", "NOT NULL DEFAULT 0"], ["max_video_minutes", "int", "NOT NULL DEFAULT 3"],
       ["max_videos_per_month", "int", "NOT NULL DEFAULT 1"], ["status", "text", "NOT NULL DEFAULT 'active'"],
       ["provider", "text"], ["provider_ref", "text"], ["provider_customer", "text"], ["current_period_end", "time"],
-      ["cancel_at_period_end", "bool"], ["updated_at", "time"],
+      ["cancel_at_period_end", "bool"], ["updated_at", "time"], ["overrides_json", "text"],
     ],
   },
   {
@@ -101,6 +102,7 @@ export const SCHEMA = [
       ["user_id", "text", "PRIMARY KEY"], ["email", "text"], ["name", "text"], ["creator_type", "text"], ["phone", "text"],
       ["notify_email", "bool", "true"], ["notify_whatsapp", "bool"], ["referral_code", "text"], ["referred_by", "text"],
       ["referral_rewarded", "bool"], ["created_at", "time", NOW], ["updated_at", "time"],
+      ["is_admin", "bool"], ["disabled", "bool"], ["admin_notes", "text"], ["last_seen_at", "time"],
     ],
     indexes: ["CREATE UNIQUE INDEX IF NOT EXISTS profiles_referral_code ON profiles (referral_code)"],
   },
@@ -144,6 +146,10 @@ export const SCHEMA = [
       ["units", "real", "NOT NULL DEFAULT 0"], ["unit", "text"], ["cost_usd", "real", "NOT NULL DEFAULT 0"], ["created_at", "time", NOW],
     ],
     indexes: ["CREATE INDEX IF NOT EXISTS cost_events_job ON cost_events (job_id)", "CREATE INDEX IF NOT EXISTS cost_events_created ON cost_events (created_at)"],
+  },
+  {
+    name: "app_settings",
+    columns: [["key", "text", "PRIMARY KEY"], ["value", "text"], ["updated_at", "time"], ["updated_by", "text"]],
   },
   {
     name: "integrations",
@@ -236,6 +242,8 @@ export async function initializeDatabase() {
   await migrate();
   const { seedPlans } = await import("./plans.js");
   await seedPlans();
+  const { loadSettings } = await import("./settings.js");
+  await loadSettings();
   persist();
 }
 

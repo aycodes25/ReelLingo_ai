@@ -4,7 +4,7 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getCurrentUser } from "./auth.js";
-import { config } from "./config.js";
+import { config, isAdminEmail } from "./config.js";
 import { logger } from "./logger.js";
 
 export const tusDirectory = join(tmpdir(), "reellingo-tus");
@@ -29,6 +29,7 @@ export const tusServer = new Server({
   async onIncomingRequest(request, uploadId) {
     const user = await userFrom(request);
     if (!user) throw { status_code: 401, body: "Sign in to upload.\n" };
+    if (request.method === "POST" && config.maintenanceMode && !isAdminEmail(user.email)) throw { status_code: 503, body: `${config.maintenanceMessage}\n` };
     if (uploadId && request.method !== "POST") {
       const upload = await datastore.getUpload(uploadId).catch(() => null);
       if (upload && upload.metadata?.userId !== user.id) throw { status_code: 403, body: "This upload belongs to another account.\n" };

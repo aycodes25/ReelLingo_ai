@@ -2,6 +2,7 @@ import { rateLimit, ipKeyGenerator } from "express-rate-limit";
 import { ensureProfile, planFor } from "./accounts.js";
 import { getCurrentUser } from "./auth.js";
 import { config, isAdminEmail } from "./config.js";
+import { dbTime, query } from "./db.js";
 import { getLanguage } from "./languages.js";
 import { getSignedUrl } from "./storage.js";
 import { getMembership } from "./teams.js";
@@ -18,6 +19,34 @@ export class HttpError extends Error {
   }
 }
 
+const lastSeen = new Map();
+function touchLastSeen(userId) {
+  const now = Date.now();
+  if (now - (lastSeen.get(userId) || 0) < 5 * 60 * 1000) return;
+  lastSeen.set(userId, now);
+  void query("UPDATE profiles SET last_seen_at = $1 WHERE user_id = $2", [dbTime(), userId]).catch(() => undefined);
+}
+
+/** Blocks new work while an admin has maintenance mode on. Admins can still use everything. */
+export function blockDuringMaintenance(request, response, next) {
+  if (config.maintenanceMode && !request.user?.isAdmin) {
+    response.status(503).json({ detail: config.maintenanceMessage, code: "maintenance" });
+    return;
+  }
+  next();
+}
+
+/** 403 when an admin has switched a feature off for everyone. */
+export function requireFeature(flag, label) {
+  return (_request, response, next) => {
+    if (!config[flag]) {
+      response.status(403).json({ detail: `${label} is currently turned off.`, code: "feature_disabled" });
+      return;
+    }
+    next();
+  };
+}
+
 /** Accepts a Supabase session token, or an API key as `Bearer rlk_…` / `X-API-Key: rlk_…`. */
 export const authenticate = asyncRoute(async (request, response, next) => {
   const user = await getCurrentUser(request.headers.authorization, request.headers["x-api-key"]);
@@ -25,11 +54,21 @@ export const authenticate = asyncRoute(async (request, response, next) => {
     response.status(401).json({ detail: "Sign in to continue." });
     return;
   }
-  request.user = { ...user, isAdmin: isAdminEmail(user.email) };
   request.userId = user.id;
   const profile = await ensureProfile(user.id, user.email);
-  if (!user.email && profile?.email) request.user.email = profile.email;
+  const email = user.email || profile?.email || "";
+  // Admins are listed in ADMIN_EMAILS or promoted from Admin → Users.
+  request.user = { ...user, email, isAdmin: isAdminEmail(email) || Boolean(profile?.is_admin) };
+  if (profile?.disabled && !request.user.isAdmin) {
+    response.status(403).json({ detail: `Your account has been suspended. Contact ${config.supportEmail} if you think this is a mistake.`, code: "suspended" });
+    return;
+  }
+  touchLastSeen(user.id);
   if (user.viaApiKey) {
+    if (!config.featureApi) {
+      response.status(403).json({ detail: "API access is currently turned off." });
+      return;
+    }
     const plan = await planFor({ userId: user.id });
     if (!plan.plan.api_access) {
       response.status(403).json({ detail: `API access is included in the Studio plan. Your plan is ${plan.plan.name}.` });
@@ -42,7 +81,7 @@ export const authenticate = asyncRoute(async (request, response, next) => {
 /** Resolves which workspace a request acts in: personal (default) or a team named by the X-Workspace header. */
 export const workspace = asyncRoute(async (request, response, next) => {
   const raw = request.headers["x-workspace"] || request.query.workspace;
-  if (!raw || raw === "personal") {
+  if (!raw || raw === "personal" || !config.featureTeams) {
     request.workspace = { teamId: null, role: "owner" };
     next();
     return;
@@ -79,12 +118,13 @@ const limiterDefaults = {
   handler: (_request, response, _next, options) => response.status(options.statusCode).json({ detail: "Too many requests. Please slow down and try again shortly." }),
 };
 
-export const generalLimiter = rateLimit({ ...limiterDefaults, windowMs: 15 * 60 * 1000, limit: config.rateLimitPerWindow, skip: (request) => request.path === "/health" || request.path.startsWith("/files/") || request.path.startsWith("/uploads/") });
-export const authLimiter = rateLimit({ ...limiterDefaults, windowMs: 15 * 60 * 1000, limit: config.authRateLimitPerWindow });
+// Limits are read on every request so changes from Admin → Settings apply immediately.
+export const generalLimiter = rateLimit({ ...limiterDefaults, windowMs: 15 * 60 * 1000, limit: () => config.rateLimitPerWindow, skip: (request) => request.path === "/health" || request.path.startsWith("/files/") || request.path.startsWith("/uploads/") });
+export const authLimiter = rateLimit({ ...limiterDefaults, windowMs: 15 * 60 * 1000, limit: () => config.authRateLimitPerWindow });
 export const jobLimiter = rateLimit({
   ...limiterDefaults,
   windowMs: 60 * 60 * 1000,
-  limit: config.jobRateLimitPerHour,
+  limit: () => config.jobRateLimitPerHour,
   keyGenerator: (request) => request.userId || ipKeyGenerator(request.ip),
 });
 

@@ -1,5 +1,5 @@
 import type {
-  AdminJob, AdminOverview, ApiHealth, ApiKey, BillingInfo, CreateJobOptions, CreditPack, GlossaryTerm, Job, LanguageOption, Me, Plan,
+  AdminJob, AdminOverview, AdminPayment, AdminPlan, AdminSetting, AdminTeam, AdminUserDetail, AdminUserRow, PlanOverrides, ApiHealth, ApiKey, BillingInfo, CreateJobOptions, CreditPack, GlossaryTerm, Job, LanguageOption, Me, Plan,
   SavedVoice, SessionUser, TeamDetail, TeamMember, TeamSummary, TranscriptSegment, Usage, WatchData,
 } from "./types";
 
@@ -551,6 +551,84 @@ export function adminGrantCredit(billingId: string, maxMinutes: number): Promise
 
 export function adminSetPlan(billingId: string, plan: string, months: number): Promise<unknown> {
   return request("/admin/subscriptions", { method: "POST", json: { billing_id: billingId, plan, months }, workspace: false, context: "Could not set the plan" });
+}
+
+export function adminDeleteJob(id: number): Promise<void> {
+  return request(`/admin/jobs/${id}`, { method: "DELETE", workspace: false, context: "Could not delete the job" });
+}
+
+export function getAdminUsers(params: { q?: string; plan?: string; status?: string; page?: number; sync?: boolean } = {}): Promise<{ users: AdminUserRow[]; total: number; page: number; per_page: number }> {
+  const query = new URLSearchParams();
+  if (params.q) query.set("q", params.q);
+  if (params.plan) query.set("plan", params.plan);
+  if (params.status) query.set("status", params.status);
+  if (params.page) query.set("page", String(params.page));
+  if (params.sync) query.set("sync", "1");
+  return request(`/admin/users?${query}`, { workspace: false, context: "Could not load users" });
+}
+
+export function getAdminUser(id: string): Promise<AdminUserDetail> {
+  return request(`/admin/users/${encodeURIComponent(id)}`, { workspace: false, context: "Could not load the user" });
+}
+
+export function adminCreateUser(input: { email: string; name?: string; password?: string; plan?: string; months?: number; invite?: boolean }): Promise<{ user: AdminUserDetail; temporary_password: string | null; invited: boolean }> {
+  return request("/admin/users", { method: "POST", json: input, workspace: false, context: "Could not create the account" });
+}
+
+export function adminUpdateUser(id: string, changes: Partial<{ name: string; phone: string; creator_type: string; admin_notes: string; is_admin: boolean; disabled: boolean; plan: string; months: number; no_expiry: boolean; overrides: PlanOverrides | null }>): Promise<AdminUserDetail> {
+  return request(`/admin/users/${encodeURIComponent(id)}`, { method: "PATCH", json: changes, workspace: false, context: "Could not update the user" });
+}
+
+export function adminDeleteUser(id: string): Promise<{ deleted: boolean }> {
+  return request(`/admin/users/${encodeURIComponent(id)}`, { method: "DELETE", workspace: false, context: "Could not delete the user" });
+}
+
+export function adminGrantUserCredits(id: string, maxMinutes: number, count: number): Promise<AdminUserDetail> {
+  return request(`/admin/users/${encodeURIComponent(id)}/credits`, { method: "POST", json: { max_minutes: maxMinutes, count }, workspace: false, context: "Could not grant credits" });
+}
+
+export function adminRevokeCredit(creditId: number): Promise<void> {
+  return request(`/admin/credits/${creditId}`, { method: "DELETE", workspace: false, context: "Could not remove the credit" });
+}
+
+export function adminEmailUser(id: string, subject: string, message: string): Promise<{ sent: boolean }> {
+  return request(`/admin/users/${encodeURIComponent(id)}/email`, { method: "POST", json: { subject, message }, workspace: false, context: "Could not send the email" });
+}
+
+export function getAdminPlans(): Promise<{ plans: AdminPlan[]; permissions: Record<string, string>; max_video_minutes: number }> {
+  return request("/admin/plans", { workspace: false, context: "Could not load plans" });
+}
+
+export function adminCreatePlan(plan: Partial<Plan> & { code: string }): Promise<Plan> {
+  return request("/admin/plans", { method: "POST", json: plan, workspace: false, context: "Could not create the plan" });
+}
+
+export function adminUpdatePlan(code: string, plan: Partial<Plan>): Promise<Plan> {
+  return request(`/admin/plans/${encodeURIComponent(code)}`, { method: "PUT", json: plan, workspace: false, context: "Could not save the plan" });
+}
+
+export function adminDeletePlan(code: string, moveTo: string): Promise<{ moved: number }> {
+  return request(`/admin/plans/${encodeURIComponent(code)}?move_to=${encodeURIComponent(moveTo)}`, { method: "DELETE", workspace: false, context: "Could not delete the plan" });
+}
+
+export function getAdminSettings(): Promise<AdminSetting[]> {
+  return request("/admin/settings", { workspace: false, context: "Could not load settings" });
+}
+
+export function adminUpdateSettings(changes: Record<string, unknown>): Promise<AdminSetting[]> {
+  return request("/admin/settings", { method: "PUT", json: changes, workspace: false, context: "Could not save settings" });
+}
+
+export function getAdminTeams(): Promise<AdminTeam[]> {
+  return request("/admin/teams", { workspace: false, context: "Could not load teams" });
+}
+
+export function adminDeleteTeam(id: number): Promise<void> {
+  return request(`/admin/teams/${id}`, { method: "DELETE", workspace: false, context: "Could not delete the team" });
+}
+
+export function getAdminPayments(status = ""): Promise<AdminPayment[]> {
+  return request(`/admin/payments${status ? `?status=${status}` : ""}`, { workspace: false, context: "Could not load payments" });
 }
 
 export type { TranscriptSegment };

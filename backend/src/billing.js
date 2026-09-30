@@ -68,6 +68,8 @@ export async function createCheckout({ provider, user, billingId, planCode = nul
   const pack = packCode ? getCreditPack(packCode) : null;
   const plan = planCode ? await getPlan(planCode) : null;
   if (!pack && (!plan || plan.code !== planCode || plan.price_usd <= 0)) throw new Error("Choose a paid plan or a pay-as-you-go pack.");
+  if (pack && !config.featurePayg) throw new Error("Pay-as-you-go credits are currently unavailable.");
+  if (plan && (plan.contact_sales || !plan.public)) throw new Error(`The ${plan.name} plan is arranged directly with our team. Contact ${config.supportEmail}.`);
   const kind = pack ? "payg" : "subscription";
   const reference = `rl_${randomUUID().replace(/-/g, "").slice(0, 20)}`;
   const callback = `${config.frontendUrl}/billing/callback?provider=${provider}`;

@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
-import { ChevronDown, CircleAlert, RotateCcw } from "lucide-react";
+import { ChevronDown, CircleAlert, RotateCcw, Trash2 } from "lucide-react";
+import AdminNav from "@/components/AdminNav";
 import AppShell from "@/components/AppShell";
-import { adminGrantCredit, adminRetryJob, adminSetPlan, getAdminJobs, getAdminOverview } from "@/lib/api";
+import { adminDeleteJob, adminGrantCredit, adminRetryJob, adminSetPlan, getAdminJobs, getAdminOverview } from "@/lib/api";
 import { formatMoney, relativeTime } from "@/lib/format";
 import type { AdminJob, AdminOverview } from "@/lib/types";
 
@@ -59,6 +60,7 @@ export default function AdminPage() {
 
   return (
     <AppShell crumbs={[{ label: "Dashboard", href: "/dashboard" }, { label: "Admin" }]}>
+      <AdminNav />
       <div className="page-head">
         <div>
           <h1>Admin overview</h1>
@@ -155,7 +157,7 @@ export default function AdminPage() {
                 <td>{job.duration_seconds ? `${(job.duration_seconds / 60).toFixed(1)} min` : "—"}</td>
                 <td title={job.costs.items.map((item) => `${item.provider} ${item.operation}: $${item.cost_usd.toFixed(4)}`).join("\n")}>{formatMoney(job.costs.total_usd, "USD")}</td>
                 <td>{relativeTime(job.created_at)}</td>
-                <td>{job.status === "failed" && <button type="button" className="icon-btn" aria-label={`Retry job ${job.id}`} onClick={() => act(() => adminRetryJob(job.id), `Job ${job.id} requeued.`)}><RotateCcw size={16} /></button>}</td>
+                <td>{job.status === "failed" && <button type="button" className="icon-btn" aria-label={`Retry job ${job.id}`} onClick={() => act(() => adminRetryJob(job.id), `Job ${job.id} requeued.`)}><RotateCcw size={16} /></button>}{job.status !== "processing" && <button type="button" className="icon-btn" aria-label={`Delete job ${job.id}`} onClick={() => { if (window.confirm(`Delete job ${job.id} and its files?`)) void act(() => adminDeleteJob(job.id), `Job ${job.id} deleted.`); }}><Trash2 size={16} /></button>}</td>
               </tr>
             ))}
           </tbody>

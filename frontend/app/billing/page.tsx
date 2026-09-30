@@ -101,10 +101,12 @@ export default function BillingPage() {
                   {plan.featured && <span className="plan-flag">MOST POPULAR</span>}
                   <h3>{plan.name}</h3>
                   <p>{plan.blurb}</p>
-                  <div className="plan-price">{plan.price_usd ? price(plan.price_usd, plan.price_ngn) : "Free"}{plan.price_usd ? <small>/month</small> : null}</div>
+                  <div className="plan-price">{plan.contact_sales ? "Custom" : plan.price_usd ? price(plan.price_usd, plan.price_ngn) : "Free"}{plan.price_usd && !plan.contact_sales ? <small>/month</small> : null}</div>
                   <ul className="check-list">{plan.features.map((feature) => <li key={feature}><CircleCheck size={18} />{feature}</li>)}</ul>
                   {current ? (
                     <button type="button" className="btn btn-outline btn-block" disabled>Current plan</button>
+                  ) : plan.contact_sales ? (
+                    <a className="btn btn-outline btn-block" href={`mailto:${process.env.NEXT_PUBLIC_SUPPORT_EMAIL || "support@reellingo.ai"}?subject=${encodeURIComponent(`${plan.name} plan`)}`}>Contact sales</a>
                   ) : plan.price_usd ? (
                     <button type="button" className={`btn btn-block ${plan.featured ? "btn-primary" : "btn-outline"}`} disabled={!payable || !canManage || Boolean(busy)} onClick={() => checkout({ plan: plan.code })}>
                       {busy === plan.code ? <LoaderCircle size={16} className="spin" /> : <CreditCard size={16} />}Choose {plan.name}
@@ -115,7 +117,7 @@ export default function BillingPage() {
             })}
           </div>
 
-          <section className="section-block" id="payg">
+          {billing.packs.length > 0 && <section className="section-block" id="payg">
             <h2>Pay as you go</h2>
             <p className="card-sub">Not ready for a subscription? Buy a one-off credit. Each covers one video up to the length shown and never expires. Credits are used automatically when your monthly videos run out or a video is longer than your plan allows.</p>
             <div className="pack-grid">
@@ -129,7 +131,7 @@ export default function BillingPage() {
                 </article>
               ))}
             </div>
-          </section>
+          </section>}
 
           <section className="section-block">
             <h2><Receipt size={20} style={{ display: "inline", verticalAlign: "-3px" }} /> Payment history</h2>
