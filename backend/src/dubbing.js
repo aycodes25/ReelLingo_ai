@@ -1,9 +1,12 @@
-import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import OpenAI from "openai";
 import { config } from "./config.js";
+import { recordCost } from "./costs.js";
 import { getLanguage } from "./languages.js";
+import { logger } from "./logger.js";
+import { runCapture } from "./media.js";
 import { responseError, withRetries } from "./retry.js";
 
 const ELEVENLABS_API = "https://api.elevenlabs.io";
@@ -11,7 +14,9 @@ const TRACK_SAMPLE_RATE = 24000;
 const MAX_SEGMENT_SPEEDUP = 1.5;
 const MAX_TOTAL_SPEEDUP = 2.5;
 const SPEAKER_SAMPLE_SECONDS = 150;
+const MIN_CLONE_SECONDS = 4;
 const TTS_CONCURRENCY = 2;
+const OPENAI_VOICES = ["alloy", "onyx", "nova", "echo", "shimmer", "fable"];
 
 let modelLanguagesCache = null;
 
@@ -23,20 +28,9 @@ function elevenHeaders(extra = {}) {
   return { "xi-api-key": config.elevenlabsApiKey, ...extra };
 }
 
-function runFfmpeg(args, captureStdout = false) {
-  return new Promise((resolve, reject) => {
-    const child = spawn("ffmpeg", args, { stdio: ["ignore", captureStdout ? "pipe" : "ignore", "pipe"] });
-    const chunks = [];
-    let stderr = "";
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    if (captureStdout) child.stdout.on("data", (chunk) => chunks.push(chunk));
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) resolve(captureStdout ? Buffer.concat(chunks) : undefined);
-      else reject(new Error(stderr.trim().split("\n").slice(-3).join(" ") || `ffmpeg exited with code ${code}`));
-    });
-  });
+async function runFfmpeg(args, captureStdout = false) {
+  const { stdout } = await runCapture("ffmpeg", args, { binary: true });
+  return captureStdout ? stdout : undefined;
 }
 
 async function elevenFetch(path, options, context) {
@@ -72,7 +66,7 @@ async function remainingCharacters() {
   }
 }
 
-async function createSpeakerSample(sourceAudioPath, segments, outputPath) {
+export async function createSpeakerSample(sourceAudioPath, segments, outputPath) {
   const picked = [];
   let total = 0;
   for (const segment of segments) {
@@ -100,12 +94,11 @@ async function createSpeakerSample(sourceAudioPath, segments, outputPath) {
   return outputPath;
 }
 
-async function cloneSpeaker(sourceAudioPath, sourceSegments, workdir) {
-  const samplePath = join(workdir, "speaker-sample.mp3");
-  await createSpeakerSample(sourceAudioPath, sourceSegments, samplePath);
+/** Creates an ElevenLabs instant voice clone from an audio sample file. */
+export async function cloneFromSample(samplePath, name, description) {
   const form = new FormData();
-  form.append("name", `ReelLingo temporary speaker ${Date.now()}`);
-  form.append("description", "Temporary clone made from speech in the user's uploaded video.");
+  form.append("name", name);
+  form.append("description", description);
   form.append("remove_background_noise", "true");
   form.append("files", new Blob([await readFile(samplePath)], { type: "audio/mpeg" }), "speaker-sample.mp3");
   const response = await elevenFetch("/v1/voices/add", { method: "POST", headers: elevenHeaders(), body: form }, "Speaker voice cloning");
@@ -114,12 +107,18 @@ async function cloneSpeaker(sourceAudioPath, sourceSegments, workdir) {
   return clone.voice_id;
 }
 
-async function deleteVoice(voiceId) {
+async function cloneSpeaker(sourceAudioPath, sourceSegments, workdir, label) {
+  const samplePath = join(workdir, `speaker-sample-${label}.mp3`);
+  await createSpeakerSample(sourceAudioPath, sourceSegments, samplePath);
+  return cloneFromSample(samplePath, `ReelLingo temporary speaker ${Date.now()}`, "Temporary clone made from speech in the user's uploaded video.");
+}
+
+export async function deleteVoice(voiceId) {
   try {
     const response = await fetch(`${ELEVENLABS_API}/v1/voices/${encodeURIComponent(voiceId)}`, { method: "DELETE", headers: elevenHeaders() });
-    if (!response.ok) console.warn(`Could not delete temporary ElevenLabs voice ${voiceId} (${response.status}).`);
+    if (!response.ok) logger.warn({ voiceId, status: response.status }, "Could not delete ElevenLabs voice");
   } catch (error) {
-    console.warn("Could not delete temporary ElevenLabs voice.", error);
+    logger.warn({ err: error, voiceId }, "Could not delete ElevenLabs voice");
   }
 }
 
@@ -144,24 +143,27 @@ async function synthesizeWithElevenLabs(text, voiceId, languageCode) {
   }, "ElevenLabs speech synthesis");
   const audio = Buffer.from(await response.arrayBuffer());
   if (!audio.length) throw new Error("ElevenLabs returned an empty audio clip.");
+  await recordCost("elevenlabs", "speech", text.length, "characters", (text.length / 1000) * config.costs.elevenlabsPer1kChars);
   return audio;
 }
 
 let openai;
-async function synthesizeWithOpenAI(text, targetLanguage) {
+async function synthesizeWithOpenAI(text, targetLanguage, voice = "alloy") {
   if (!config.openaiApiKey) throw new Error("OPENAI_API_KEY is required for speech synthesis.");
   openai ||= new OpenAI({ apiKey: config.openaiApiKey, baseURL: config.openaiBaseUrl, timeout: 120_000 });
   const target = getLanguage(targetLanguage)?.name || targetLanguage;
-  return withRetries(async () => {
+  const audio = await withRetries(async () => {
     const response = await openai.audio.speech.create({
       model: config.openaiTtsModel,
-      voice: "alloy",
+      voice,
       input: text,
       instructions: `Speak naturally and clearly in ${target}. Read the text exactly as written.`,
       response_format: "mp3",
     });
     return Buffer.from(await response.arrayBuffer());
   }, { label: "OpenAI speech synthesis" });
+  await recordCost("openai", "speech", text.length, "characters", (text.length / 1000) * config.costs.openaiTtsPer1kChars);
+  return audio;
 }
 
 async function mapWithConcurrency(items, limit, task) {
@@ -178,20 +180,69 @@ async function mapWithConcurrency(items, limit, task) {
   return results;
 }
 
+function speakerOf(segment) {
+  return segment.speaker || "speaker_0";
+}
+
+/** Speakers ordered by how long they talk, so the main speaker gets the saved voice and the first stock voice. */
+export function rankSpeakers(segments) {
+  const talk = new Map();
+  for (const segment of segments) {
+    const speaker = speakerOf(segment);
+    talk.set(speaker, (talk.get(speaker) || 0) + Math.max(0, segment.end - segment.start));
+  }
+  return [...talk.entries()].sort((first, second) => second[1] - first[1]).map(([speaker, seconds]) => ({ speaker, seconds }));
+}
+
+function stockVoiceFor(rank) {
+  if (rank === 0) return config.elevenlabsFallbackVoiceId;
+  const others = config.elevenlabsStockVoices.filter((voice) => voice !== config.elevenlabsFallbackVoiceId);
+  return others.length ? others[(rank - 1) % others.length] : config.elevenlabsFallbackVoiceId;
+}
+
+export function clipCacheKey(parts) {
+  return createHash("sha1").update(JSON.stringify(parts)).digest("hex").slice(0, 20);
+}
+
 /**
- * Synthesizes each translated segment separately and lays the clips on the video timeline,
- * so the dub stays in sync and no sentence is cut off at the end of the video.
+ * Synthesizes each translated segment and lays the clips on the video timeline.
+ * Each speaker gets their own voice: a saved voice, a temporary clone of their speech, or a distinct stock voice.
+ * `clipCache` ({ get(key) → path|null }) lets a re-dub reuse clips whose text and voice haven't changed.
  */
-export async function dubSegments({ segments, sourceAudioPath, sourceSegments = segments, outputPath, targetLanguage, voiceClone, durationSeconds, workdir }) {
-  const speakable = segments.filter((segment) => segment.text?.trim());
+export async function dubSegments({
+  segments, sourceAudioPath, sourceSegments = segments, outputPath, targetLanguage, voiceClone, durationSeconds, workdir,
+  savedVoiceId = null, clipCache = null, voiceScope = "job",
+}) {
+  const speakable = segments.map((segment, index) => ({ ...segment, index })).filter((segment) => segment.text?.trim());
   if (!speakable.length) throw new Error("No translated speech is available to dub.");
   const clipsDirectory = join(workdir, "dub-clips");
   await mkdir(clipsDirectory, { recursive: true });
 
-  const characters = speakable.reduce((sum, segment) => sum + segment.text.length, 0);
   let provider = config.elevenlabsApiKey ? "elevenlabs" : "openai";
   let fallbackReason = provider === "openai" ? "ElevenLabs is not configured." : null;
-  if (provider === "elevenlabs") {
+  const ranked = rankSpeakers(sourceSegments.length ? sourceSegments : speakable);
+  const rankOf = new Map(ranked.map((item, index) => [item.speaker, index]));
+
+  const voiceKeyFor = (speaker) => {
+    const rank = rankOf.get(speaker) ?? 0;
+    if (provider === "openai") return `openai:${OPENAI_VOICES[rank % OPENAI_VOICES.length]}`;
+    if (savedVoiceId && rank === 0) return `saved:${savedVoiceId}`;
+    if (voiceClone) return `clone:${voiceScope}:${speaker}`;
+    return `stock:${stockVoiceFor(rank)}`;
+  };
+  const keyFor = (segment) => clipCacheKey([provider, config.elevenlabsModel, voiceKeyFor(speakerOf(segment)), targetLanguage, segment.text.trim()]);
+
+  const cached = new Map();
+  if (clipCache) {
+    for (const segment of speakable) {
+      const hit = await clipCache.get(keyFor(segment));
+      if (hit) cached.set(segment.index, hit);
+    }
+  }
+  const pending = speakable.filter((segment) => !cached.has(segment.index));
+
+  if (provider === "elevenlabs" && pending.length) {
+    const characters = pending.reduce((sum, segment) => sum + segment.text.length, 0);
     const remaining = await remainingCharacters();
     if (remaining !== null && remaining < characters) {
       provider = "openai";
@@ -199,36 +250,80 @@ export async function dubSegments({ segments, sourceAudioPath, sourceSegments = 
     }
   }
 
-  let voiceId = config.elevenlabsFallbackVoiceId;
-  let cloneId = null;
-  if (provider === "elevenlabs" && voiceClone) {
-    try {
-      cloneId = await cloneSpeaker(sourceAudioPath, sourceSegments, workdir);
-      voiceId = cloneId;
-    } catch (error) {
-      fallbackReason = `Speaker cloning unavailable: ${explainCloneFailure(error)}`;
+  // Choose a concrete voice ID per speaker, cloning only speakers who still need new clips.
+  const voices = new Map();
+  const clones = [];
+  const speakerResults = [];
+  if (provider === "elevenlabs") {
+    let cloningBlocked = false;
+    for (const { speaker, seconds } of ranked) {
+      const rank = rankOf.get(speaker);
+      let voiceId = stockVoiceFor(rank);
+      let cloned = false;
+      const needsClips = pending.some((segment) => speakerOf(segment) === speaker);
+      if (savedVoiceId && rank === 0) {
+        voiceId = savedVoiceId;
+      } else if (voiceClone && needsClips && !cloningBlocked) {
+        const speakerSegments = sourceSegments.filter((segment) => speakerOf(segment) === speaker);
+        if (seconds < MIN_CLONE_SECONDS && ranked.length > 1) {
+          fallbackReason ||= "Some speakers talk too briefly to clone, so they use a standard voice.";
+        } else {
+          try {
+            voiceId = await cloneSpeaker(sourceAudioPath, speakerSegments.length ? speakerSegments : sourceSegments, workdir, rank);
+            clones.push(voiceId);
+            cloned = true;
+          } catch (error) {
+            fallbackReason = `Speaker cloning unavailable: ${explainCloneFailure(error)}`;
+            cloningBlocked = true;
+          }
+        }
+      }
+      voices.set(speaker, voiceId);
+      speakerResults.push({ speaker, seconds: Math.round(seconds * 10) / 10, voice: savedVoiceId && rank === 0 ? "saved" : cloned ? "clone" : "standard" });
+    }
+  } else {
+    for (const { speaker, seconds } of ranked) {
+      voices.set(speaker, OPENAI_VOICES[rankOf.get(speaker) % OPENAI_VOICES.length]);
+      speakerResults.push({ speaker, seconds: Math.round(seconds * 10) / 10, voice: "standard" });
     }
   }
 
+  const produced = [];
   try {
     const supported = provider === "elevenlabs" ? await modelLanguages() : new Set();
     const languageCode = supported.has(targetLanguage) ? targetLanguage : undefined;
-    const clips = await mapWithConcurrency(speakable, TTS_CONCURRENCY, async (segment, index) => {
+    const fresh = await mapWithConcurrency(pending, TTS_CONCURRENCY, async (segment) => {
+      const voice = voices.get(speakerOf(segment)) || (provider === "openai" ? "alloy" : config.elevenlabsFallbackVoiceId);
       const audio = provider === "elevenlabs"
-        ? await synthesizeWithElevenLabs(segment.text.trim(), voiceId, languageCode)
-        : await synthesizeWithOpenAI(segment.text.trim(), targetLanguage);
-      const path = join(clipsDirectory, `clip-${String(index).padStart(4, "0")}.mp3`);
+        ? await synthesizeWithElevenLabs(segment.text.trim(), voice, languageCode)
+        : await synthesizeWithOpenAI(segment.text.trim(), targetLanguage, voice);
+      const path = join(clipsDirectory, `clip-${String(segment.index).padStart(4, "0")}.mp3`);
       await writeFile(path, audio);
-      return { path, start: segment.start, end: segment.end };
+      produced.push({ key: keyFor(segment), path });
+      return { index: segment.index, path };
     });
+    const pathByIndex = new Map([...cached.entries(), ...fresh.map((clip) => [clip.index, clip.path])]);
+    const clips = speakable.map((segment) => ({ path: pathByIndex.get(segment.index), start: segment.start, end: segment.end }));
     await layoutDubTrack(clips, durationSeconds, outputPath);
   } finally {
-    if (cloneId) await deleteVoice(cloneId);
+    for (const cloneId of clones) await deleteVoice(cloneId);
   }
 
-  return { voiceCloned: Boolean(cloneId), provider, fallbackReason };
+  return {
+    voiceCloned: clones.length > 0 || Boolean(savedVoiceId),
+    provider,
+    fallbackReason,
+    newClips: produced,
+    reusedClips: cached.size,
+    speakers: speakerResults,
+    keys: speakable.map((segment) => ({ index: segment.index, key: keyFor(segment) })),
+  };
 }
 
+/**
+ * Synthesizes each translated segment separately and lays the clips on the video timeline,
+ * so the dub stays in sync and no sentence is cut off at the end of the video.
+ */
 async function decodeClip(path, tempo = 1) {
   const filters = [];
   let remaining = tempo;

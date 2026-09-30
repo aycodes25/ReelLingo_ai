@@ -5,6 +5,8 @@ import {
 } from "lucide-react";
 import BrandLogo from "@/components/BrandLogo";
 import Testimonials from "@/components/Testimonials";
+import { formatMoney } from "@/lib/format";
+import type { CreditPack, Plan } from "@/lib/types";
 
 const FEATURE_POINTS = ["99.9% Accuracy", "Preserved Tone & Emotion", "Instant Processing"];
 
@@ -17,25 +19,28 @@ const ADOPTION = [
   { country: "Ghana", growth: "+110%", width: "100%", color: "#f26b3a" },
 ];
 
-const PLANS = [
-  {
-    name: "Free Starter", blurb: "Perfect for new creators exploring AI localization.", price: "$0", period: "/month",
-    features: ["15 minutes of video/mo", "Standard AI voices", "5 languages available", "Watermarked exports", "720p resolution"],
-    cta: "Get Started", href: "/signup",
-  },
-  {
-    name: "Pro Creator", blurb: "The essential tool for professional content creators.", price: "$29", period: "/month", featured: true,
-    features: ["120 minutes of video/mo", "Premium voice cloning", "Unlimited languages", "No watermarks", "4K resolution support", "Priority processing"],
-    cta: "Get Started", href: "/signup",
-  },
-  {
-    name: "Enterprise", blurb: "For media houses and large production teams.", price: "Custom", period: "",
-    features: ["Unlimited video volume", "Dedicated support manager", "Custom API integration", "Collaborative workspaces", "Custom voice development", "Bulk licensing deals"],
-    cta: "Contact Sales", href: "mailto:sales@reellingo.ai",
-  },
+const API = process.env.API_INTERNAL_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+// Used only if the API is unreachable while the page renders; the plans table is the source of truth.
+const FALLBACK_PLANS: Plan[] = [
+  { code: "free", name: "Free", blurb: "Try ReelLingo on a short clip.", price_usd: 0, price_ngn: 0, videos_per_month: 1, max_video_minutes: 3, voice_clone: false, watermark: true, priority: 0, max_targets: 1, lip_sync: false, api_access: false, team_seats: 1, saved_voices: 0, featured: false, features: ["1 video per month", "Up to 3 minutes per video", "Standard AI voices", "ReelLingo watermark", "SRT & VTT subtitles"] },
+  { code: "starter", name: "Starter", blurb: "For hobbyists and TikTokers.", price_usd: 10, price_ngn: 16000, videos_per_month: 5, max_video_minutes: 10, voice_clone: true, watermark: false, priority: 1, max_targets: 2, lip_sync: false, api_access: false, team_seats: 1, saved_voices: 0, featured: false, features: ["5 videos per month", "Up to 10 minutes per video", "Voice cloning", "No watermark", "2 languages per upload", "Burned-in captions"] },
+  { code: "creator", name: "Creator", blurb: "The sweet spot for YouTubers.", price_usd: 25, price_ngn: 40000, videos_per_month: 10, max_video_minutes: 25, voice_clone: true, watermark: false, priority: 2, max_targets: 4, lip_sync: false, api_access: false, team_seats: 1, saved_voices: 1, featured: true, features: ["10 videos per month", "Up to 25 minutes per video", "Premium voice cloning + saved voice", "Priority processing", "4 languages per upload", "Multi-speaker dubbing", "Publish to YouTube"] },
+  { code: "studio", name: "Studio", blurb: "For media houses and Nollywood.", price_usd: 80, price_ngn: 130000, videos_per_month: 30, max_video_minutes: 60, voice_clone: true, watermark: false, priority: 3, max_targets: 10, lip_sync: true, api_access: true, team_seats: 5, saved_voices: 5, featured: false, features: ["30 videos per month", "Up to 60 minutes per video", "Lip-sync", "Highest priority queue", "10 languages per upload", "Team workspace (5 seats)", "API access", "Dedicated WhatsApp support"] },
 ];
 
-export default function LandingPage() {
+async function loadPlans(): Promise<{ plans: Plan[]; packs: CreditPack[] }> {
+  try {
+    const response = await fetch(`${API}/plans`, { next: { revalidate: 300 } });
+    if (response.ok) return response.json();
+  } catch {
+    // fall through to the static copy
+  }
+  return { plans: FALLBACK_PLANS, packs: [] };
+}
+
+export default async function LandingPage() {
+  const { plans, packs } = await loadPlans();
   return (
     <div>
       <header className="site-header">
@@ -187,20 +192,24 @@ export default function LandingPage() {
               <p>Whether you&apos;re just starting out or managing a media empire, we have a plan that fits.</p>
             </div>
             <div className="pricing-grid">
-              {PLANS.map((plan) => (
-                <article key={plan.name} className={`plan ${plan.featured ? "is-featured" : ""}`}>
+              {plans.map((plan) => (
+                <article key={plan.code} className={`plan ${plan.featured ? "is-featured" : ""}`}>
                   {plan.featured && <span className="plan-flag">MOST POPULAR</span>}
                   <h3>{plan.name}</h3>
                   <p>{plan.blurb}</p>
-                  <div className="plan-price">{plan.price}{plan.period && <small>{plan.period}</small>}</div>
+                  <div className="plan-price">{plan.price_usd ? formatMoney(plan.price_usd, "USD") : "$0"}<small>/month</small></div>
+                  {plan.price_ngn > 0 && <p className="plan-local">or {formatMoney(plan.price_ngn, "NGN")}/month with Paystack</p>}
                   <ul className="check-list">{plan.features.map((feature) => <li key={feature}><CircleCheck size={18} />{feature}</li>)}</ul>
-                  {plan.href.startsWith("mailto:")
-                    ? <a href={plan.href} className="btn btn-outline btn-block">{plan.cta}</a>
-                    : <Link href={plan.href} className={`btn btn-block ${plan.featured ? "btn-primary" : "btn-outline"}`}>{plan.cta}</Link>}
+                  <Link href={plan.price_usd ? "/signup?plan=" + plan.code : "/signup"} className={`btn btn-block ${plan.featured ? "btn-primary" : "btn-outline"}`}>{plan.price_usd ? `Choose ${plan.name}` : "Start free"}</Link>
                 </article>
               ))}
             </div>
-            <p className="pricing-note">All plans include a 7-day free trial of Pro features. No credit card required.</p>
+            {packs.length > 0 && (
+              <p className="pricing-note">
+                Not ready to subscribe? Pay per video: {packs.map((pack) => `${formatMoney(pack.price_usd, "USD")} up to ${pack.minutes} min`).join(" · ")}.
+              </p>
+            )}
+            <p className="pricing-note">Pay in Naira with Paystack or in dollars by card. Cancel anytime. No credit card needed for the free plan.</p>
           </div>
         </section>
 
@@ -210,7 +219,7 @@ export default function LandingPage() {
               <h2>Ready to reach the world?</h2>
               <p>Join thousands of African creators who are scaling their global presence with ReelLingo.</p>
               <div className="cta-actions">
-                <Link href="/signup" className="btn btn-yellow btn-lg">Start Your Free Trial</Link>
+                <Link href="/signup" className="btn btn-yellow btn-lg">Start Free</Link>
                 <a href="mailto:sales@reellingo.ai" className="btn btn-ghost-light btn-lg" style={{ fontSize: 15 }}>Talk to an Expert</a>
               </div>
             </div>

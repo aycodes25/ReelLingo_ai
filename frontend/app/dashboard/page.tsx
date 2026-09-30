@@ -3,20 +3,15 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowRight, CircleCheck, ChevronDown, Info, Languages, Upload, Video, Zap } from "lucide-react";
+import { CircleCheck, ChevronDown, Gift, Info, Languages, Upload, Video, Zap } from "lucide-react";
 import AppShell from "@/components/AppShell";
-import UploadDropzone from "@/components/UploadDropzone";
-import LanguagePicker from "@/components/LanguagePicker";
+import NewProjectForm from "@/components/NewProjectForm";
 import ProjectRow from "@/components/ProjectRow";
-import { ApiError, clearStoredToken, createJob, getApiHealth, getJobs, getLanguages, getStoredToken, getUsage } from "@/lib/api";
+import { ApiError, clearStoredToken, getApiHealth, getJobs, getLanguages, getStoredToken, getUsage } from "@/lib/api";
 import type { ApiHealth, Job, LanguageOption, Usage } from "@/lib/types";
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [file, setFile] = useState<File | null>(null);
-  const [sourceLanguage, setSourceLanguage] = useState("auto");
-  const [targetLanguage, setTargetLanguage] = useState("en");
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [languages, setLanguages] = useState<LanguageOption[]>([]);
   const [jobs, setJobs] = useState<Job[] | null>(null);
@@ -52,24 +47,6 @@ export default function DashboardPage() {
       ? "Add ELEVENLABS_API_KEY to backend/.env to dub in the original speaker's voice."
       : null;
 
-  async function handleSubmit() {
-    if (!file) {
-      setErrorMessage("Please select a video first.");
-      return;
-    }
-    setIsSubmitting(true);
-    setErrorMessage(null);
-    try {
-      if (sourceLanguage === targetLanguage) throw new Error("Choose a different target language.");
-      if (setupProblem) throw new Error(setupProblem);
-      const job = await createJob(file, sourceLanguage, targetLanguage, true);
-      router.push(`/jobs/${job.id}`);
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Upload failed");
-      setIsSubmitting(false);
-    }
-  }
-
   const videoLimit = usage?.max_videos_per_month || 1;
   const usedPercent = usage ? Math.min(100, Math.round((usage.videos_this_month / videoLimit) * 100)) : 0;
   const engine = apiUnreachable ? { label: "OFFLINE", dot: "is-off" } : !health ? { label: "CHECKING", dot: "is-warn" } : setupProblem ? { label: "SETUP NEEDED", dot: "is-warn" } : { label: "ONLINE", dot: "" };
@@ -98,21 +75,13 @@ export default function DashboardPage() {
             <span title="Your original video stays unchanged. We create a new dubbed copy." style={{ color: "var(--muted)" }}><Info size={18} /></span>
           </div>
           <div className="create-card-body">
-            <div className="lang-row">
-              <LanguagePicker id="source-language" label="Source language" options={languages} value={sourceLanguage} onChange={setSourceLanguage} />
-              <LanguagePicker id="target-language" label="Target language" options={languages.filter((language) => language.code !== "auto")} value={targetLanguage} onChange={setTargetLanguage} />
-            </div>
-            <UploadDropzone onFileSelected={(selected) => { setFile(selected); setErrorMessage(null); }}>
-              <button type="button" onClick={handleSubmit} disabled={isSubmitting || !file || !languages.length} className="btn btn-primary">
-                {isSubmitting ? "Uploading video…" : "Start Processing"} <ArrowRight size={17} />
-              </button>
-              {errorMessage && <p role="alert" className="form-error">{errorMessage}</p>}
-            </UploadDropzone>
+            <NewProjectForm languages={languages} usage={usage} health={health} setupProblem={setupProblem} />
             <div className="feature-chips">
               <span className="feature-chip"><span><CircleCheck size={15} /></span>Voice Cloning</span>
-              <span className="feature-chip"><span><CircleCheck size={15} /></span>Automatic SRT</span>
-              <span className="feature-chip"><span><CircleCheck size={15} /></span>Original-Quality Export</span>
+              <span className="feature-chip"><span><CircleCheck size={15} /></span>Background Music Kept</span>
+              <span className="feature-chip"><span><CircleCheck size={15} /></span>SRT, VTT &amp; Burned-in Captions</span>
             </div>
+            {errorMessage && <p role="alert" className="form-error">{errorMessage}</p>}
           </div>
         </section>
 
@@ -125,8 +94,8 @@ export default function DashboardPage() {
             </div>
             <div className="credits-bar" role="progressbar" aria-valuenow={usedPercent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${usedPercent}%` }} /></div>
             <div className="credits-foot">
-              <span>{usedPercent}% of monthly limit</span>
-              <Link href="/#pricing">Upgrade Plan</Link>
+              <span>{usedPercent}% of monthly limit{usage?.credits.length ? ` · +${usage.credits.length} credit${usage.credits.length === 1 ? "" : "s"}` : ""}</span>
+              <Link href="/billing">{usage?.tier === "free" ? "Upgrade Plan" : "Manage Plan"}</Link>
             </div>
           </section>
 
@@ -143,9 +112,13 @@ export default function DashboardPage() {
               <strong><Zap size={13} />{health?.capabilities.languages || "50+"} Languages Available</strong>
               ReelLingo supports Yoruba, Igbo, Hausa, Swahili, Amharic, Wolof, Lingala and more for dubbing.
             </div>
+            <div className="notice-box is-warm">
+              <strong><Gift size={13} />Invite a creator, both get a free video</strong>
+              Share your referral link from <Link href="/settings#referral" className="link">Settings</Link>. When they finish their first dub, you each get a bonus credit.
+            </div>
             <div className="notice-box is-neutral">
               <strong>Your plan limits</strong>
-              {usage ? `Videos up to ${usage.max_video_minutes} minute${usage.max_video_minutes === 1 ? "" : "s"} long, ${videoLimit} per month on the ${usage.tier} plan.` : "Loading your plan details…"}
+              {usage ? `Videos up to ${usage.max_video_minutes} minute${usage.max_video_minutes === 1 ? "" : "s"} long, ${videoLimit} per month and ${usage.plan.max_targets} language${usage.plan.max_targets === 1 ? "" : "s"} per upload on the ${usage.plan.name} plan.${usage.plan.watermark ? " Exports carry a small ReelLingo watermark." : ""}` : "Loading your plan details…"}
             </div>
           </section>
         </div>
@@ -161,7 +134,7 @@ export default function DashboardPage() {
       {jobs === null ? (
         <div className="project-list">{[0, 1, 2].map((key) => <div key={key} className="skeleton" style={{ height: 82 }} />)}</div>
       ) : jobs.length ? (
-        <ul className="project-list">{jobs.map((job) => <ProjectRow key={job.id} job={job} languages={languages} />)}</ul>
+        <ul className="project-list">{jobs.map((job) => <ProjectRow key={job.id} job={job} languages={languages} onRemoved={(id) => setJobs((current) => (current || []).filter((item) => item.id !== id))} />)}</ul>
       ) : (
         <div className="empty-state">
           <span><Video size={24} /></span>

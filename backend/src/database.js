@@ -1,46 +1,14 @@
-import initSqlJs from "sql.js";
-import pg from "pg";
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
 import { config } from "./config.js";
+import { closeDatabase, dbTime, initializeDatabase, isPostgres, many, one, query, toBool } from "./db.js";
 
-const { Pool } = pg;
-const require = createRequire(import.meta.url);
-const isPostgres = /^postgres(?:ql)?:/i.test(config.databaseUrl);
-const JSON_FIELDS = ["transcript_json", "translated_segments_json", "detected_languages_json"];
-let sqlite;
-let pool;
-let databaseFile;
+export { closeDatabase, initializeDatabase };
 
-function sqliteOne(sql, values = []) {
-  const statement = sqlite.prepare(sql);
-  try {
-    statement.bind(values);
-    return statement.step() ? statement.getAsObject() : null;
-  } finally {
-    statement.free();
-  }
-}
-
-function sqliteMany(sql, values = []) {
-  const statement = sqlite.prepare(sql);
-  const rows = [];
-  try {
-    statement.bind(values);
-    while (statement.step()) rows.push(statement.getAsObject());
-    return rows;
-  } finally {
-    statement.free();
-  }
-}
-
-function sqliteRun(sql, values = []) {
-  sqlite.run(sql, values);
-  const result = sqlite.exec("SELECT last_insert_rowid() AS id")[0];
-  writeFileSync(databaseFile, Buffer.from(sqlite.export()));
-  return { id: result?.values[0]?.[0] };
-}
+const JSON_FIELDS = [
+  "transcript_json", "translated_segments_json", "detected_languages_json", "options_json", "outputs_json",
+  "metadata_json", "speakers_json", "clips_json",
+];
+const BOOL_FIELDS = ["voice_clone", "share_original"];
+const NUMBER_FIELDS = ["id", "team_id", "depends_on", "priority", "attempts", "redub_count", "credit_id"];
 
 function normalizeJob(job) {
   if (!job) return null;
@@ -53,180 +21,155 @@ function normalizeJob(job) {
       }
     }
   }
+  for (const field of BOOL_FIELDS) job[field] = toBool(job[field]);
+  for (const field of NUMBER_FIELDS) if (job[field] !== null && job[field] !== undefined) job[field] = Number(job[field]);
+  if (job.duration_seconds !== null && job.duration_seconds !== undefined) job.duration_seconds = Number(job.duration_seconds);
+  job.options_json ||= {};
   return job;
 }
 
-export async function initializeDatabase() {
-  if (isPostgres) {
-    pool = new Pool({ connectionString: config.databaseUrl, ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false } : undefined });
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS jobs (
-        id BIGSERIAL PRIMARY KEY,
-        user_id TEXT,
-        status TEXT NOT NULL DEFAULT 'queued',
-        current_step TEXT NOT NULL DEFAULT 'queued',
-        source_language TEXT NOT NULL,
-        target_language TEXT NOT NULL,
-        voice_clone BOOLEAN NOT NULL DEFAULT FALSE,
-        input_storage_path TEXT NOT NULL,
-        output_video_path TEXT,
-        output_srt_path TEXT,
-        transcript_json TEXT,
-        translated_segments_json TEXT,
-        detected_languages_json TEXT,
-        duration_seconds DOUBLE PRECISION,
-        error_message TEXT,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );
-      CREATE TABLE IF NOT EXISTS subscriptions (
-        id BIGSERIAL PRIMARY KEY,
-        user_id TEXT NOT NULL UNIQUE,
-        tier TEXT NOT NULL DEFAULT 'free',
-        videos_used_this_month INTEGER NOT NULL DEFAULT 0,
-        max_video_minutes INTEGER NOT NULL DEFAULT 3,
-        max_videos_per_month INTEGER NOT NULL DEFAULT 1
-      );
-    `);
-    await pool.query(`
-      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS transcript_json TEXT;
-      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS translated_segments_json TEXT;
-      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS detected_languages_json TEXT;
-      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS duration_seconds DOUBLE PRECISION;
-      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS original_filename TEXT;
-      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS processing_note TEXT;
-    `);
-    return;
-  }
-
-  databaseFile = config.databaseUrl.startsWith("sqlite:///")
-    ? resolve(config.databaseUrl.slice("sqlite:///".length))
-    : resolve("./local.db");
-  mkdirSync(dirname(databaseFile), { recursive: true });
-  const wasmPath = require.resolve("sql.js/dist/sql-wasm.wasm");
-  const wasmBinary = readFileSync(wasmPath);
-  const SQL = await initSqlJs({ wasmBinary });
-  sqlite = existsSync(databaseFile)
-    ? new SQL.Database(readFileSync(databaseFile))
-    : new SQL.Database();
-  sqlite.exec(`
-    CREATE TABLE IF NOT EXISTS jobs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT,
-      status TEXT NOT NULL DEFAULT 'queued',
-      current_step TEXT NOT NULL DEFAULT 'queued',
-      source_language TEXT NOT NULL,
-      target_language TEXT NOT NULL,
-      voice_clone INTEGER NOT NULL DEFAULT 0,
-      input_storage_path TEXT NOT NULL,
-      output_video_path TEXT,
-      output_srt_path TEXT,
-      transcript_json TEXT,
-      translated_segments_json TEXT,
-      detected_languages_json TEXT,
-      duration_seconds REAL,
-      error_message TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS subscriptions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT NOT NULL UNIQUE,
-      tier TEXT NOT NULL DEFAULT 'free',
-      videos_used_this_month INTEGER NOT NULL DEFAULT 0,
-      max_video_minutes INTEGER NOT NULL DEFAULT 3,
-      max_videos_per_month INTEGER NOT NULL DEFAULT 1
-    );
-  `);
-  const columns = new Set(sqliteMany("PRAGMA table_info(jobs)").map((column) => column.name));
-  const newColumns = [
-    ["transcript_json", "TEXT"],
-    ["translated_segments_json", "TEXT"],
-    ["detected_languages_json", "TEXT"],
-    ["duration_seconds", "REAL"],
-    ["original_filename", "TEXT"],
-    ["processing_note", "TEXT"],
-  ];
-  for (const [name, type] of newColumns) {
-    if (!columns.has(name)) sqlite.exec(`ALTER TABLE jobs ADD COLUMN ${name} ${type}`);
-  }
-  writeFileSync(databaseFile, Buffer.from(sqlite.export()));
+export async function getJob(id) {
+  return normalizeJob(await one("SELECT * FROM jobs WHERE id = $1", [id]));
 }
 
-export async function getJob(id) {
-  if (isPostgres) return normalizeJob((await pool.query("SELECT * FROM jobs WHERE id = $1", [id])).rows[0]);
-  return normalizeJob(sqliteOne("SELECT * FROM jobs WHERE id = ?", [id]));
+const CREATE_FIELDS = [
+  "user_id", "team_id", "batch_id", "depends_on", "source_language", "target_language", "voice_clone", "input_storage_path",
+  "source_url", "media_type", "options_json", "original_filename", "priority", "credit_id", "current_step",
+];
+
+function serialize(key, value) {
+  if (JSON_FIELDS.includes(key) && value !== null && typeof value !== "string") return JSON.stringify(value);
+  return value;
 }
 
 export async function createJob(job) {
-  const values = [job.user_id, job.source_language, job.target_language, job.voice_clone, job.input_storage_path, job.original_filename || null];
-  if (isPostgres) {
-    const result = await pool.query(
-      "INSERT INTO jobs (user_id, status, current_step, source_language, target_language, voice_clone, input_storage_path, original_filename) VALUES ($1, 'queued', 'queued', $2, $3, $4, $5, $6) RETURNING *",
-      values,
-    );
-    return normalizeJob(result.rows[0]);
-  }
-  const result = sqliteRun(
-    "INSERT INTO jobs (user_id, status, current_step, source_language, target_language, voice_clone, input_storage_path, original_filename) VALUES (?, 'queued', 'queued', ?, ?, ?, ?, ?)",
+  const fields = CREATE_FIELDS.filter((field) => job[field] !== undefined);
+  const values = fields.map((field) => serialize(field, job[field]));
+  const placeholders = fields.map((_, index) => `$${index + 1}`).join(", ");
+  const row = await one(
+    `INSERT INTO jobs (${fields.join(", ")}, status, updated_at) VALUES (${placeholders}, 'queued', CURRENT_TIMESTAMP) RETURNING *`,
     values,
   );
-  return getJob(result.id);
+  return normalizeJob(row);
 }
 
+const UPDATABLE_FIELDS = new Set([
+  "status", "current_step", "output_video_path", "output_srt_path", "outputs_json", "error_message",
+  "transcript_json", "translated_segments_json", "detected_languages_json", "metadata_json", "speakers_json", "clips_json",
+  "duration_seconds", "voice_clone", "processing_note", "input_storage_path", "original_filename", "options_json",
+  "review_state", "redub_count", "share_slug", "share_original", "deleted_at", "files_expired_at", "attempts",
+  "heartbeat_at", "started_at", "completed_at", "priority", "credit_id", "depends_on", "media_type",
+]);
+
 export async function updateJob(id, changes) {
-  const allowedFields = new Set([
-    "status", "current_step", "output_video_path", "output_srt_path", "error_message",
-    "transcript_json", "translated_segments_json", "detected_languages_json", "duration_seconds",
-    "voice_clone", "processing_note",
-  ]);
-  const entries = Object.entries(changes).filter(([key]) => allowedFields.has(key));
+  const entries = Object.entries(changes).filter(([key]) => UPDATABLE_FIELDS.has(key));
   if (entries.length === 0) return getJob(id);
-  if (isPostgres) {
-    const assignments = entries.map(([key], index) => `${key} = $${index + 1}`).join(", ");
-    await pool.query(`UPDATE jobs SET ${assignments} WHERE id = $${entries.length + 1}`, [...entries.map(([, value]) => value), id]);
-  } else {
-    const assignments = entries.map(([key]) => `${key} = ?`).join(", ");
-    sqliteRun(`UPDATE jobs SET ${assignments} WHERE id = ?`, [...entries.map(([, value]) => value), id]);
-  }
+  const assignments = entries.map(([key], index) => `${key} = $${index + 1}`).join(", ");
+  await query(
+    `UPDATE jobs SET ${assignments}, updated_at = CURRENT_TIMESTAMP WHERE id = $${entries.length + 1}`,
+    [...entries.map(([key, value]) => serialize(key, value)), id],
+  );
   return getJob(id);
 }
 
-export async function getSubscription(userId) {
-  if (isPostgres) return (await pool.query("SELECT * FROM subscriptions WHERE user_id = $1", [userId])).rows[0] || null;
-  return sqliteOne("SELECT * FROM subscriptions WHERE user_id = ?", [userId]);
+/** Jobs visible in a workspace: a team's shared jobs, or the user's personal (team-less) jobs. */
+export async function listJobs(userId, limit = 10, { teamId = null, offset = 0 } = {}) {
+  const rows = teamId
+    ? await many("SELECT * FROM jobs WHERE team_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3", [teamId, limit, offset])
+    : await many("SELECT * FROM jobs WHERE user_id = $1 AND team_id IS NULL AND deleted_at IS NULL ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3", [userId, limit, offset]);
+  return rows.map(normalizeJob);
 }
 
-export async function listJobs(userId, limit = 10) {
-  if (isPostgres) {
-    return (await pool.query("SELECT * FROM jobs WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2", [userId, limit])).rows.map(normalizeJob);
-  }
-  return sqliteMany("SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?", [userId, limit]).map(normalizeJob);
+export async function listBatchJobs(batchId) {
+  if (!batchId) return [];
+  return (await many("SELECT * FROM jobs WHERE batch_id = $1 AND deleted_at IS NULL ORDER BY id", [batchId])).map(normalizeJob);
 }
 
-export async function getMonthlyUsage(userId) {
-  const row = isPostgres
-    ? (await pool.query(
-      "SELECT COUNT(*) AS videos, COALESCE(SUM(duration_seconds), 0) AS seconds FROM jobs WHERE user_id = $1 AND status <> 'failed' AND created_at >= date_trunc('month', CURRENT_TIMESTAMP)",
-      [userId],
-    )).rows[0]
-    : sqliteOne(
-      "SELECT COUNT(*) AS videos, COALESCE(SUM(duration_seconds), 0) AS seconds FROM jobs WHERE user_id = ? AND status <> 'failed' AND created_at >= date('now', 'start of month')",
-      [userId],
-    );
+export async function getJobBySlug(slug) {
+  return normalizeJob(await one("SELECT * FROM jobs WHERE share_slug = $1 AND deleted_at IS NULL", [slug]));
+}
+
+export async function getSubscription(billingId) {
+  return one("SELECT * FROM subscriptions WHERE user_id = $1", [billingId]);
+}
+
+function monthStart() {
+  const now = new Date();
+  return dbTime(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)));
+}
+
+/**
+ * Plan usage this calendar month. Failed jobs don't count, and neither do jobs paid for with a
+ * pay-as-you-go credit. Deleted jobs still count, so deleting cannot reset the allowance.
+ */
+export async function getMonthlyUsage(userId, { teamId = null } = {}) {
+  const scope = teamId ? "team_id = $1" : "user_id = $1 AND team_id IS NULL";
+  const row = await one(
+    `SELECT COUNT(*) AS videos, COALESCE(SUM(duration_seconds), 0) AS seconds FROM jobs
+     WHERE ${scope} AND status <> 'failed' AND credit_id IS NULL AND created_at >= $2`,
+    [teamId || userId, monthStart()],
+  );
   return { videos: Number(row?.videos || 0), seconds: Number(row?.seconds || 0) };
 }
 
-// A job's pipeline runs inside the API process, so a restart leaves unfinished jobs orphaned.
-export async function failInterruptedJobs() {
-  const message = "Processing was interrupted because the server restarted. Please upload the video again.";
-  if (isPostgres) {
-    return (await pool.query("UPDATE jobs SET status = 'failed', error_message = $1 WHERE status IN ('queued', 'processing')", [message])).rowCount;
-  }
-  const count = Number(sqliteOne("SELECT COUNT(*) AS count FROM jobs WHERE status IN ('queued', 'processing')")?.count || 0);
-  if (count) sqliteRun("UPDATE jobs SET status = 'failed', error_message = ? WHERE status IN ('queued', 'processing')", [message]);
-  return count;
+/** Atomically moves the next runnable job to "processing". Jobs waiting on a batch leader's transcript are skipped. */
+export async function claimNextJob() {
+  const ready = `status = 'queued' AND deleted_at IS NULL AND (depends_on IS NULL OR EXISTS (
+      SELECT 1 FROM jobs leader WHERE leader.id = jobs.depends_on
+      AND (leader.transcript_json IS NOT NULL OR leader.status IN ('failed', 'done') OR leader.deleted_at IS NOT NULL)))`;
+  const now = dbTime();
+  const row = isPostgres
+    ? await one(
+      `UPDATE jobs SET status = 'processing', attempts = attempts + 1, heartbeat_at = $1, started_at = COALESCE(started_at, $1), updated_at = $1
+       WHERE id = (SELECT id FROM jobs WHERE ${ready} ORDER BY priority DESC, id ASC LIMIT 1 FOR UPDATE SKIP LOCKED)
+       RETURNING *`,
+      [now],
+    )
+    : await one(
+      `UPDATE jobs SET status = 'processing', attempts = attempts + 1, heartbeat_at = $1, started_at = COALESCE(started_at, $1), updated_at = $1
+       WHERE id = (SELECT id FROM jobs WHERE ${ready} ORDER BY priority DESC, id ASC LIMIT 1)
+       RETURNING *`,
+      [now],
+    );
+  return normalizeJob(row);
 }
 
-export function closeDatabase() {
-  sqlite?.close();
-  return pool?.end();
+export async function touchJob(id) {
+  await query("UPDATE jobs SET heartbeat_at = $1 WHERE id = $2 AND status = 'processing'", [dbTime(), id]);
+}
+
+/**
+ * Jobs whose worker stopped sending heartbeats (crash, restart, deploy) go back in the queue and resume
+ * from their last saved step. After too many attempts they fail instead of looping forever.
+ */
+export async function requeueStaleJobs({ staleMs = config.jobStaleMs, maxAttempts = config.maxJobAttempts } = {}) {
+  const cutoff = dbTime(new Date(Date.now() - staleMs));
+  const failed = await query(
+    `UPDATE jobs SET status = 'failed', error_message = $1, updated_at = CURRENT_TIMESTAMP
+     WHERE status = 'processing' AND (heartbeat_at IS NULL OR heartbeat_at < $2) AND attempts >= $3`,
+    ["Processing was interrupted several times. Use Retry to try again.", cutoff, maxAttempts],
+  );
+  const requeued = await query(
+    `UPDATE jobs SET status = 'queued', updated_at = CURRENT_TIMESTAMP
+     WHERE status = 'processing' AND (heartbeat_at IS NULL OR heartbeat_at < $1)`,
+    [cutoff],
+  );
+  return { requeued: requeued.rowCount, failed: failed.rowCount };
+}
+
+/** Other live jobs that still need the same stored input (multi-language batches share one upload). */
+export async function countInputUsers(inputPath, exceptJobId) {
+  if (!inputPath) return 0;
+  const row = await one(
+    "SELECT COUNT(*) AS count FROM jobs WHERE input_storage_path = $1 AND id <> $2 AND deleted_at IS NULL AND files_expired_at IS NULL",
+    [inputPath, exceptJobId],
+  );
+  return Number(row?.count || 0);
+}
+
+export async function listExpiredJobs(cutoff, limit = 100) {
+  return (await many(
+    "SELECT * FROM jobs WHERE files_expired_at IS NULL AND created_at < $1 AND status IN ('done', 'failed') ORDER BY id LIMIT $2",
+    [dbTime(cutoff), limit],
+  )).map(normalizeJob);
 }
