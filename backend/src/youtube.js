@@ -68,7 +68,7 @@ export async function completeYoutubeConnect(code, state) {
 
 export async function youtubeStatus(userId) {
   const row = await one("SELECT account_label, updated_at FROM integrations WHERE user_id = $1 AND provider = 'youtube'", [userId]);
-  return { configured: youtubeConfigured(), connected: Boolean(row), channel: row?.account_label || null };
+  return { configured: youtubeConfigured() && config.featureYoutube, connected: Boolean(row), channel: row?.account_label || null };
 }
 
 export async function disconnectYoutube(userId) {

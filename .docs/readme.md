@@ -246,3 +246,32 @@ Every integration is off until its keys are set in `backend/.env` (see `backend/
 | Signing & encryption | Set `APP_SECRET` to a long random string in production. |
 
 Other features need no configuration: resumable uploads, review-before-dub editor with per-line retranslation and cached re-dubs, glossary, translation tone, several target languages per upload, burned-in caption styles, VTT/ASS subtitles, 9:16 / 1:1 / 4:5 / 16:9 exports, audio-only (podcast) dubbing, AI titles/descriptions/hashtags, saved voices, public watch pages with before/after comparison, referrals, team workspaces, API keys (`/docs/api`), rate limiting, retention cleanup (`RETENTION_DAYS`) and live progress over SSE.
+
+---
+
+## ▶️ Running on your own computer (no Docker needed)
+
+From the project folder:
+
+```bash
+npm run setup   # first time only: installs everything
+npm run check   # shows which tools and keys are in place
+npm run dev     # starts the API (port 8000) and the website (port 3000) together
+```
+
+Open `http://localhost:3000`. Stop with `Ctrl+C`. After editing `backend/.env`, stop and run `npm run dev` again.
+Every key has step-by-step instructions written above it inside `backend/.env`.
+
+## 🛡️ Admin area
+
+Sign in with an email listed in `ADMIN_EMAILS` (backend/.env), then open **Admin** in the sidebar.
+
+| Page | What you control |
+|:---|:---|
+| Overview | Jobs, failure rate, provider spend, revenue and margin; retry or delete any job |
+| Users | Search everyone; add accounts (saved in Supabase); change plan; custom per-user limits; grant or remove credits; suspend; make admin; email; delete |
+| Plans | Prices, limits and which features each plan includes; create, hide or delete plans; "contact sales" plans |
+| App settings | Turn features on/off for everyone, maintenance mode, announcement banner, sign-ups, limits, processing engines |
+| Teams / Payments | All team workspaces and every payment |
+
+Changes apply within seconds without restarting. API keys stay in `backend/.env`.

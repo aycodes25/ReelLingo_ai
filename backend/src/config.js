@@ -115,6 +115,30 @@ export const config = {
   watermarkText: process.env.WATERMARK_TEXT || "Made with ReelLingo",
   watermarkFont: process.env.WATERMARK_FONT || "",
 
+  // Admin-controlled switches (Admin → Settings saves overrides in the database; see settings.js).
+  maintenanceMode: process.env.MAINTENANCE_MODE === "true",
+  maintenanceMessage: process.env.MAINTENANCE_MESSAGE || "ReelLingo is getting an upgrade. New uploads are paused for a short while.",
+  signupsEnabled: process.env.SIGNUPS_ENABLED !== "false",
+  announcement: process.env.ANNOUNCEMENT || "",
+  announcementTone: "info",
+  supportEmail: process.env.SUPPORT_EMAIL || "support@reellingo.ai",
+  supportWhatsapp: process.env.SUPPORT_WHATSAPP || "",
+  featureLinkImport: true,
+  featureMultiSpeaker: true,
+  featureReview: true,
+  featureBackground: true,
+  featureCaptions: true,
+  featureFormats: true,
+  featureLipSync: true,
+  featureYoutube: true,
+  featureSavedVoices: true,
+  featurePublicShare: true,
+  featureTeams: true,
+  featureApi: true,
+  featureReferrals: true,
+  featurePayg: true,
+  ngnPerUsd: number("NGN_PER_USD", 1600),
+
   // Provider cost estimates (USD) used for per-job margin tracking.
   costs: {
     whisperPerMinute: number("COST_WHISPER_PER_MIN", 0.006),

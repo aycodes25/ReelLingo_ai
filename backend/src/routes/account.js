@@ -8,7 +8,7 @@ import { createApiKey, listApiKeys, revokeApiKey } from "../auth.js";
 import { config } from "../config.js";
 import { many, one, query } from "../db.js";
 import { cloneFromSample, createSpeakerSample, deleteVoice } from "../dubbing.js";
-import { asyncRoute, authenticate, HttpError, toIsoTimestamp, workspace } from "../http.js";
+import { asyncRoute, authenticate, HttpError, requireFeature, toIsoTimestamp, workspace } from "../http.js";
 import { getLanguage } from "../languages.js";
 import { run } from "../media.js";
 import { emailConfigured, whatsappConfigured } from "../notify.js";
@@ -124,7 +124,7 @@ router.get("/voices", authenticate, asyncRoute(async (request, response) => {
  * Saves a creator's voice for reuse, so it's cloned once instead of on every video.
  * Source: a speaker from a finished project (`job_id`, `speaker`) or an uploaded sample file. Explicit consent is required.
  */
-router.post("/voices", authenticate, sampleUpload.single("sample"), asyncRoute(async (request, response) => {
+router.post("/voices", authenticate, requireFeature("featureSavedVoices", "Saved voices"), sampleUpload.single("sample"), asyncRoute(async (request, response) => {
   const workdir = await mkdtemp(join(tmpdir(), "reellingo-voice-"));
   try {
     if (!config.elevenlabsApiKey) throw new HttpError(503, "Saved voices need ELEVENLABS_API_KEY in backend/.env.");
@@ -175,7 +175,7 @@ router.get("/api-keys", authenticate, asyncRoute(async (request, response) => {
   response.json({ keys: await listApiKeys(request.userId), available: plan.plan.api_access });
 }));
 
-router.post("/api-keys", authenticate, asyncRoute(async (request, response) => {
+router.post("/api-keys", authenticate, requireFeature("featureApi", "API access"), asyncRoute(async (request, response) => {
   if (request.user.viaApiKey) throw new HttpError(403, "API keys can't create other API keys.");
   const plan = await planFor({ userId: request.userId });
   if (!plan.plan.api_access) throw new HttpError(402, "API access is included in the Studio plan.", { code: "feature", feature: "api_access" });

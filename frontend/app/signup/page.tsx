@@ -23,7 +23,8 @@ export default function SignupPage() {
   const [health, setHealth] = useState<ApiHealth | null>(null);
   const [referral, setReferral] = useState<string | null>(null);
   const [confirmEmail, setConfirmEmail] = useState(false);
-  const signUpUnavailable = health?.mode === "live" && !health.capabilities.authentication;
+  const signupsClosed = health?.settings?.signups_enabled === false;
+  const signUpUnavailable = (health?.mode === "live" && !health.capabilities.authentication) || signupsClosed;
   const isComplete = Boolean(name.trim() && email && password.length >= 8 && creatorType && agreed);
 
   useEffect(() => {
@@ -74,7 +75,10 @@ export default function SignupPage() {
           <h1>Create your account</h1>
           <p className="auth-sub">Start your localization journey today. No credit card required.</p>
 
-          {signUpUnavailable && (
+          {signupsClosed && (
+            <div className="alert alert-warn" style={{ marginBottom: 20 }}><CircleAlert size={16} /><span><strong>Sign-ups are paused.</strong> New accounts aren&apos;t being accepted right now. Please check back soon.</span></div>
+          )}
+          {signUpUnavailable && !signupsClosed && (
             <div className="alert alert-warn" style={{ marginBottom: 20 }}><CircleAlert size={16} /><span><strong>Account sign-up is not configured.</strong> Add SUPABASE_URL and SUPABASE_KEY to backend/.env, then restart the backend.</span></div>
           )}
           {errorMessage && <div role="alert" className="alert alert-error" style={{ marginBottom: 20 }}><CircleAlert size={16} /><span>{errorMessage}</span></div>}

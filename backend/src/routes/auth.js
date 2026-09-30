@@ -8,6 +8,10 @@ const router = express.Router();
 const oauthProviders = new Set(["google", "github", "apple", "facebook"]);
 
 router.post("/auth/signup", authLimiter, asyncRoute(async (request, response) => {
+  if (!config.signupsEnabled) {
+    response.status(403).json({ detail: "New sign-ups are paused right now. Please check back soon.", code: "signups_closed" });
+    return;
+  }
   const { email, password, name, creator_type: creatorType, referral_code: referralCode } = request.body || {};
   if (!email || !password || String(password).length < 8) {
     response.status(400).json({ detail: "Enter an email and a password of at least 8 characters." });

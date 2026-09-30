@@ -11,7 +11,7 @@ router.get("/languages", (_request, response) => response.json(languages));
 
 /** Public watch page data. Links are signed on every request, so a shared page keeps working indefinitely. */
 router.get("/public/watch/:slug", asyncRoute(async (request, response) => {
-  const job = await getJobBySlug(String(request.params.slug));
+  const job = config.featurePublicShare ? await getJobBySlug(String(request.params.slug)) : null;
   if (!job || job.status !== "done" || job.files_expired_at) throw new HttpError(404, "This video isn't available.");
   const outputs = job.outputs_json || [];
   const main = outputs.find((output) => output.kind === "lipsync") || outputs.find((output) => output.kind === "video" || output.kind === "audio");

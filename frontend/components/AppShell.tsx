@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import BrandLogo from "@/components/BrandLogo";
 import { clearStoredToken, getApiHealth, getMe, getSessionUser, getStoredToken, getWorkspace, logout, setWorkspace } from "@/lib/api";
-import type { Me, SessionUser } from "@/lib/types";
+import type { ApiHealth, Me, SessionUser } from "@/lib/types";
 
 export const SUPPORT_EMAIL = process.env.NEXT_PUBLIC_SUPPORT_EMAIL || "support@reellingo.ai";
 export const SUPPORT_WHATSAPP = process.env.NEXT_PUBLIC_SUPPORT_WHATSAPP || "";
@@ -37,6 +37,8 @@ export default function AppShell({ crumbs, children }: { crumbs: Crumb[]; childr
   const [navOpen, setNavOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [workspace, setWorkspaceState] = useState("personal");
+  const [health, setHealth] = useState<ApiHealth | null>(null);
+  const [suspended, setSuspended] = useState<string | null>(null);
 
   useEffect(() => {
     if (!getStoredToken()) {
@@ -54,15 +56,17 @@ export default function AppShell({ crumbs, children }: { crumbs: Crumb[]; childr
         setWorkspace("personal");
         setWorkspaceState("personal");
       }
-    }).catch((error: { status?: number }) => {
+    }).catch((error: { status?: number; code?: string; message?: string }) => {
       if (error?.status === 401) {
         clearStoredToken();
         router.replace("/login");
       }
+      if (error?.code === "suspended") setSuspended(error.message || "Your account has been suspended.");
     });
-    getApiHealth().then((health) => {
+    getApiHealth().then((status) => {
+      setHealth(status);
       // A demo token is useless once the backend runs against real auth.
-      if (health.mode === "live" && getStoredToken() === "local-demo-token") {
+      if (status.mode === "live" && getStoredToken() === "local-demo-token") {
         clearStoredToken();
         router.replace("/login");
       }
@@ -90,7 +94,24 @@ export default function AppShell({ crumbs, children }: { crumbs: Crumb[]; childr
   const initials = (user?.name || "C").split(/\s+/).map((part) => part[0]?.toUpperCase()).join("").slice(0, 2);
   const activeTeams = me?.teams.filter((team) => team.status === "active") || [];
   const pendingInvites = me?.teams.filter((team) => team.status === "invited").length || 0;
-  const nav = me?.is_admin ? [...NAV, { href: "/admin", label: "Admin", icon: ShieldCheck }] : NAV;
+  const features = health?.settings?.features || {};
+  const visibleNav = NAV.filter((item) => item.href !== "/teams" || features.teams !== false);
+  const nav = me?.is_admin ? [...visibleNav, { href: "/admin", label: "Admin", icon: ShieldCheck }] : visibleNav;
+  const supportEmail = health?.settings?.support.email || SUPPORT_EMAIL;
+  const supportWhatsapp = (health?.settings?.support.whatsapp || SUPPORT_WHATSAPP).replace(/\D/g, "");
+  const announcement = health?.settings?.announcement;
+  const maintenance = health?.settings?.maintenance;
+
+  if (suspended) {
+    return (
+      <main className="center-state is-error" style={{ minHeight: "80vh", alignContent: "center" }}>
+        <span><ShieldCheck size={28} /></span>
+        <h1>Account suspended</h1>
+        <p>{suspended}</p>
+        <button type="button" className="btn btn-primary" onClick={handleLogout}>Log out</button>
+      </main>
+    );
+  }
 
   return (
     <div className={`app ${navOpen ? "is-nav-open" : ""}`} onClick={(event) => { if (navOpen && event.target === event.currentTarget) setNavOpen(false); }}>
@@ -147,11 +168,17 @@ export default function AppShell({ crumbs, children }: { crumbs: Crumb[]; childr
             <Search size={16} />
             <input type="search" placeholder="Search projects..." aria-label="Search projects" value={query} onChange={(event) => setQuery(event.target.value)} />
           </form>
-          <a className="icon-btn" href={SUPPORT_WHATSAPP ? `https://wa.me/${SUPPORT_WHATSAPP.replace(/\D/g, "")}` : `mailto:${SUPPORT_EMAIL}`} target={SUPPORT_WHATSAPP ? "_blank" : undefined} rel="noreferrer" aria-label="Get help"><CircleHelp size={20} /></a>
+          <a className="icon-btn" href={supportWhatsapp ? `https://wa.me/${supportWhatsapp}` : `mailto:${supportEmail}`} target={supportWhatsapp ? "_blank" : undefined} rel="noreferrer" aria-label="Get help"><CircleHelp size={20} /></a>
           <Link className="icon-btn bell" href="/dashboard#announcements" aria-label="Announcements"><Bell size={20} /></Link>
           <Link href="/dashboard#new-project" className="btn btn-primary btn-sm"><Plus size={17} /><span className="btn-label">New Project</span></Link>
         </header>
 
+        {maintenance?.enabled && (
+          <div className="site-banner is-warn" role="status">
+            <b>Maintenance:</b> {maintenance.message}{me?.is_admin ? " (You're an admin, so you can still use everything.)" : ""}
+          </div>
+        )}
+        {announcement && <div className={`site-banner is-${announcement.tone}`} role="status">{announcement.text}</div>}
         <main className="app-content">{children}</main>
 
         <footer className="app-footer">
@@ -160,7 +187,7 @@ export default function AppShell({ crumbs, children }: { crumbs: Crumb[]; childr
             <Link href="/#how-it-works">Documentation</Link>
             <Link href="/docs/api"><Code2 size={13} style={{ display: "inline", verticalAlign: "-2px" }} /> API Reference</Link>
             <Link href="/settings#status">Status</Link>
-            <a href={`mailto:${SUPPORT_EMAIL}`}>Contact Support</a>
+            <a href={`mailto:${supportEmail}`}>Contact Support</a>
           </nav>
         </footer>
       </div>

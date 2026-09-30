@@ -122,6 +122,15 @@ export interface ApiHealth {
     virusScan?: boolean;
     worker?: string;
   };
+  settings?: PublicSettings;
+}
+
+export interface PublicSettings {
+  maintenance: { enabled: boolean; message: string };
+  signups_enabled: boolean;
+  announcement: { text: string; tone: "info" | "success" | "warn" } | null;
+  support: { email: string; whatsapp: string };
+  features: Record<string, boolean>;
 }
 
 export interface Plan {
@@ -142,6 +151,11 @@ export interface Plan {
   saved_voices: number;
   features: string[];
   featured: boolean;
+  permissions: Record<string, boolean>;
+  contact_sales: boolean;
+  public: boolean;
+  sort: number;
+  custom?: boolean;
 }
 
 export interface CreditPack {
@@ -317,4 +331,99 @@ export interface CreateJobOptions {
   formats: string[];
   lipSync: boolean;
   trimToFit?: boolean;
+}
+
+export interface AdminSetting {
+  key: string;
+  type: "bool" | "number" | "text" | "select";
+  group: string;
+  label: string;
+  help: string | null;
+  options: string[] | null;
+  min: number | null;
+  max: number | null;
+  step: number | null;
+  value: boolean | number | string;
+  default: boolean | number | string;
+  overridden: boolean;
+}
+
+export interface AdminPlan extends Plan {
+  subscribers: number;
+}
+
+export interface AdminUserRow {
+  user_id: string;
+  email: string;
+  name: string;
+  plan: string;
+  plan_name: string;
+  plan_expires: string | null;
+  custom_limits: boolean;
+  videos_this_month: number;
+  minutes_this_month: number;
+  total_jobs: number;
+  credits: number;
+  is_admin: boolean;
+  disabled: boolean;
+  created_at: string | null;
+  last_seen_at: string | null;
+}
+
+export interface PlanOverrides {
+  videos_per_month?: number;
+  max_video_minutes?: number;
+  max_targets?: number;
+  team_seats?: number;
+  saved_voices?: number;
+  priority?: number;
+  voice_clone?: boolean;
+  watermark?: boolean;
+  lip_sync?: boolean;
+  api_access?: boolean;
+  permissions?: Record<string, boolean>;
+}
+
+export interface AdminUserDetail {
+  user_id: string;
+  email: string;
+  name: string;
+  creator_type: string;
+  phone: string;
+  admin_notes: string;
+  is_admin: boolean;
+  admin_via_env: boolean;
+  disabled: boolean;
+  created_at: string | null;
+  last_seen_at: string | null;
+  referral_code: string;
+  referred_by: string | null;
+  referrals: { invited: number; rewarded: number };
+  auth: { email_confirmed?: boolean; last_sign_in_at?: string | null; created_at?: string; providers?: string[]; banned_until?: string | null; error?: string } | null;
+  plan: Plan;
+  usage: { videos_this_month: number; minutes_this_month: number; max_videos_per_month: number };
+  subscription: { tier: string; status: string; provider: string | null; current_period_end: string | null; cancel_at_period_end: boolean; overrides: PlanOverrides | null } | null;
+  credits: { id: number; max_minutes: number; source: string; used_by_job: number | null; created_at: string | null }[];
+  jobs: { id: number; status: string; source_language: string; target_language: string; original_filename: string | null; duration_seconds: number | null; created_at: string | null; deleted: boolean; error_message: string | null }[];
+  payments: Payment[];
+  teams: { id: number; name: string; role: string; status: string }[];
+  api_keys: number;
+  voices: { id: number; name: string; created_at: string | null }[];
+  total_cost_usd: number;
+}
+
+export interface AdminTeam {
+  id: number;
+  name: string;
+  owner_id: string;
+  owner_email: string;
+  members: number;
+  plan: string;
+  created_at: string | null;
+}
+
+export interface AdminPayment extends Payment {
+  user_id: string;
+  email: string;
+  billing_id: string;
 }

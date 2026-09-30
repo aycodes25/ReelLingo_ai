@@ -1,0 +1,16 @@
+{
+  "name": "reellingo",
+  "private": true,
+  "description": "Run the ReelLingo backend and website together on your computer.",
+  "scripts": {
+    "setup": "npm install && npm --prefix backend install && npm --prefix frontend install",
+    "dev": "concurrently -n api,web -c magenta,cyan \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\"",
+    "start": "concurrently -n api,web -c magenta,cyan \"npm --prefix backend start\" \"npm --prefix frontend run start\"",
+    "build": "npm --prefix frontend run build",
+    "test": "npm --prefix backend test && npm --prefix frontend test",
+    "check": "node scripts/check-setup.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.5"
+  }
+}
