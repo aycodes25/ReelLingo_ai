@@ -14,7 +14,9 @@ services:
         required: false
     environment:
       - PORT=8000
+      - NODE_ENV=development
       - FRONTEND_URL=http://localhost:3000
+      - PUBLIC_API_URL=http://localhost:8000
       - LOCAL_STORAGE_DIR=/app/storage
     healthcheck:
       test:
@@ -26,6 +28,41 @@ services:
       timeout: 5s
       retries: 6
       start_period: 15s
+    restart: unless-stopped
+
+  # Optional separate job worker. Set WORKER_MODE=off in backend/.env, then:
+  #   docker compose --profile worker up --build
+  worker:
+    profiles: ["worker"]
+    build: ./backend
+    working_dir: /app
+    volumes:
+      - ./backend:/app
+      - backend_node_modules:/app/node_modules
+      - backend_storage:/app/storage
+    command: sh -c "test -d node_modules/express || npm ci; npm run worker"
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      - NODE_ENV=development
+      - FRONTEND_URL=http://localhost:3000
+      - PUBLIC_API_URL=http://localhost:8000
+      - LOCAL_STORAGE_DIR=/app/storage
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Optional upload virus scanning. Set CLAMAV_HOST=clamav in backend/.env, then:
+  #   docker compose --profile security up --build
+  clamav:
+    profiles: ["security"]
+    image: clamav/clamav:stable
+    environment:
+      - CLAMAV_NO_FRESHCLAMD=false
+    volumes:
+      - clamav_db:/var/lib/clamav
     restart: unless-stopped
 
   frontend:
@@ -40,6 +77,7 @@ services:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - API_INTERNAL_URL=http://backend:8000
     depends_on:
       backend:
         condition: service_healthy
@@ -60,3 +98,4 @@ volumes:
   backend_storage:
   frontend_node_modules:
   frontend_next:
+  clamav_db:

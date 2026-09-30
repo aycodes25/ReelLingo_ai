@@ -28,6 +28,8 @@ test("demo API exposes regional languages and protects job routes", async (conte
   process.env.ELEVENLABS_API_KEY = "";
   process.env.SUPABASE_URL = "";
   process.env.SUPABASE_KEY = "";
+  process.env.FREE_VIDEOS_PER_MONTH = "";
+  process.env.FREE_MAX_VIDEO_MINUTES = "";
   process.env.DATABASE_URL = `sqlite:///${join(dataDirectory, "jobs.db").replaceAll("\\", "/")}`;
   process.env.LOCAL_STORAGE_DIR = join(dataDirectory, "storage");
 
@@ -74,7 +76,13 @@ test("demo API exposes regional languages and protects job routes", async (conte
   assert.deepEqual(emptyJobs, []);
   assert.equal((await fetch(`${baseUrl}/usage`)).status, 401);
   const emptyUsage = await fetch(`${baseUrl}/usage`, { headers }).then((response) => response.json());
-  assert.deepEqual(emptyUsage, { tier: "free", videos_this_month: 0, minutes_this_month: 0, max_videos_per_month: 5, max_video_minutes: 10 });
+  assert.equal(emptyUsage.tier, "free");
+  assert.equal(emptyUsage.videos_this_month, 0);
+  assert.equal(emptyUsage.minutes_this_month, 0);
+  assert.equal(emptyUsage.max_videos_per_month, 1, "free plan limits come from the plans table (monetization.md)");
+  assert.equal(emptyUsage.max_video_minutes, 3);
+  assert.equal(emptyUsage.plan.watermark, true);
+  assert.equal(emptyUsage.plan.voice_clone, false);
 
   const oauthRedirect = await fetch(`${baseUrl}/auth/oauth/google`, { redirect: "manual" });
   assert.equal(oauthRedirect.status, 302);
@@ -149,8 +157,11 @@ test("demo API exposes regional languages and protects job routes", async (conte
   const usageAfterFailure = await fetch(`${baseUrl}/usage`, { headers }).then((result) => result.json());
   assert.equal(usageAfterFailure.videos_this_month, 1, "failed jobs do not use up the monthly allowance");
 
-  assert.equal(await database.failInterruptedJobs(), 2, "both queued jobs (this user and another user) are recovered");
+  const claimed = await database.claimNextJob();
+  assert.equal(claimed.id, job.id, "the oldest queued job is claimed first");
+  assert.equal(claimed.status, "processing");
+  assert.deepEqual(await database.requeueStaleJobs({ staleMs: 60_000 }), { requeued: 0, failed: 0 }, "a job with a fresh heartbeat is left alone");
+  assert.deepEqual(await database.requeueStaleJobs({ staleMs: -1000 }), { requeued: 1, failed: 0 }, "an interrupted job goes back in the queue");
   const interrupted = await fetch(`${baseUrl}/jobs/${job.id}`, { headers }).then((result) => result.json());
-  assert.equal(interrupted.status, "failed");
-  assert.match(interrupted.error_message, /server restarted/);
+  assert.equal(interrupted.status, "queued");
 });

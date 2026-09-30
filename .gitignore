@@ -7,3 +7,9 @@ __pycache__/
 .env.local
 *.db
 .next/
+
+# Tool and build artifacts
+.playwright-mcp/
+*.tsbuildinfo
+storage/
+coverage/
