@@ -142,11 +142,11 @@ export const config = {
   // Provider cost estimates (USD) used for per-job margin tracking.
   costs: {
     whisperPerMinute: number("COST_WHISPER_PER_MIN", 0.006),
-    scribePerHour: number("COST_SCRIBE_PER_HOUR", 0.4),
+    scribePerHour: number("COST_SCRIBE_PER_HOUR", 0.22),
     chatInputPerMillion: number("COST_CHAT_INPUT_PER_M", 0.15),
     chatOutputPerMillion: number("COST_CHAT_OUTPUT_PER_M", 0.6),
-    elevenlabsPer1kChars: number("COST_ELEVENLABS_PER_1K_CHARS", 0.18),
-    elevenlabsIsolationPerMinute: number("COST_ELEVENLABS_ISOLATION_PER_MIN", 0.02),
+    elevenlabsPer1kChars: number("COST_ELEVENLABS_PER_1K_CHARS", 0.08),
+    elevenlabsIsolationPerMinute: number("COST_ELEVENLABS_ISOLATION_PER_MIN", 0.12),
     openaiTtsPer1kChars: number("COST_OPENAI_TTS_PER_1K_CHARS", 0.015),
     lipsyncPerMinute: number("COST_LIPSYNC_PER_MIN", 3),
   },
