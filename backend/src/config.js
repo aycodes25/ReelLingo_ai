@@ -45,6 +45,8 @@ export const config = {
   freeMaxVideoMinutes: process.env.FREE_MAX_VIDEO_MINUTES ? Number(process.env.FREE_MAX_VIDEO_MINUTES) : null,
   localStorageDir: resolve(process.env.LOCAL_STORAGE_DIR || "./storage"),
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
+  // The separate admin website (ReelLingo_Admin repo).
+  adminUrl: process.env.ADMIN_URL || "http://localhost:3001",
   appSecret: process.env.APP_SECRET || "reellingo-dev-secret-change-me",
   logLevel: process.env.LOG_LEVEL || "info",
   sentryDsn: process.env.SENTRY_DSN || "",

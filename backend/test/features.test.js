@@ -144,3 +144,16 @@ test("integration tokens are encrypted and OAuth state is tamper-proof", () => {
   assert.equal(verifyState(`${state}x`), null);
   assert.equal(verifyState(signState({ userId: "u1" }, -10)), null);
 });
+
+test("backend/sql/schema.sql matches the schema in code (run `npm run sql` after changing tables)", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { postgresSchemaSql, SCHEMA } = await import("../src/db.js");
+  const { planSeedSql } = await import("../src/plans.js");
+  const onDisk = (await readFile(new URL("../sql/schema.sql", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
+  assert.equal(onDisk, postgresSchemaSql(planSeedSql()));
+  for (const table of SCHEMA) {
+    assert.match(onDisk, new RegExp(`ALTER TABLE public\.${table.name} ENABLE ROW LEVEL SECURITY;`));
+    assert.match(onDisk, new RegExp(`REVOKE ALL ON public\.${table.name} FROM anon, authenticated;`));
+  }
+  assert.doesNotMatch(onDisk, /DROP |DELETE FROM|TRUNCATE/i, "the schema file never removes data");
+});

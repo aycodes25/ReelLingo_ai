@@ -262,16 +262,19 @@ npm run dev     # starts the API (port 8000) and the website (port 3000) togethe
 Open `http://localhost:3000`. Stop with `Ctrl+C`. After editing `backend/.env`, stop and run `npm run dev` again.
 Every key has step-by-step instructions written above it inside `backend/.env`.
 
-## 🛡️ Admin area
+## 🛡️ Admin area (separate repo)
 
-Sign in with an email listed in `ADMIN_EMAILS` (backend/.env), then open **Admin** in the sidebar.
+The admin website lives in its own repository: https://github.com/aycodes25/ReelLingo_Admin. Clone it next to this project, run `npm install` and `npm run dev`, and open http://localhost:3001. Sign in with an email listed in `ADMIN_EMAILS` (backend/.env). Admins also see an **Admin ↗** link in the studio sidebar.
 
-| Page | What you control |
-|:---|:---|
-| Overview | Jobs, failure rate, provider spend, revenue and margin; retry or delete any job |
-| Users | Search everyone; add accounts (saved in Supabase); change plan; custom per-user limits; grant or remove credits; suspend; make admin; email; delete |
-| Plans | Prices, limits and which features each plan includes; create, hide or delete plans; "contact sales" plans |
-| App settings | Turn features on/off for everyone, maintenance mode, announcement banner, sign-ups, limits, processing engines |
-| Teams / Payments | All team workspaces and every payment |
+This backend serves the protected `/admin` API that the admin site uses, and `ADMIN_URL` in `backend/.env` tells it the admin site's address.
 
-Changes apply within seconds without restarting. API keys stay in `backend/.env`.
+## 🗄️ Database (Supabase): you apply changes yourself
+
+The backend never changes your Supabase database on its own. When it starts against Postgres it only checks, read-only, that the tables exist. If something is missing it stops and tells you what to run.
+
+- `backend/sql/check.sql`: read-only. Lists your tables and whether Row Level Security is on.
+- `backend/sql/schema.sql`: creates any missing ReelLingo tables and columns, switches on Row Level Security, and blocks Supabase's public API roles (`anon`, `authenticated`) from these tables. It is safe to run more than once and never deletes data.
+
+To run one: Supabase dashboard → **SQL Editor** → **New query** → paste the file's contents → **Run**.
+
+When the code's tables change, `npm --prefix backend run sql` regenerates `schema.sql` (it never connects to a database), and you run it again.

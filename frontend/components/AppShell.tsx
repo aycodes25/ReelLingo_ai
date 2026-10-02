@@ -13,6 +13,8 @@ import type { ApiHealth, Me, SessionUser } from "@/lib/types";
 
 export const SUPPORT_EMAIL = process.env.NEXT_PUBLIC_SUPPORT_EMAIL || "support@reellingo.ai";
 export const SUPPORT_WHATSAPP = process.env.NEXT_PUBLIC_SUPPORT_WHATSAPP || "";
+// The admin area is a separate website (ReelLingo_Admin repo).
+const ADMIN_URL = process.env.NEXT_PUBLIC_ADMIN_URL || "http://localhost:3001";
 
 const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutGrid },
@@ -96,7 +98,7 @@ export default function AppShell({ crumbs, children }: { crumbs: Crumb[]; childr
   const pendingInvites = me?.teams.filter((team) => team.status === "invited").length || 0;
   const features = health?.settings?.features || {};
   const visibleNav = NAV.filter((item) => item.href !== "/teams" || features.teams !== false);
-  const nav = me?.is_admin ? [...visibleNav, { href: "/admin", label: "Admin", icon: ShieldCheck }] : visibleNav;
+  const nav = visibleNav;
   const supportEmail = health?.settings?.support.email || SUPPORT_EMAIL;
   const supportWhatsapp = (health?.settings?.support.whatsapp || SUPPORT_WHATSAPP).replace(/\D/g, "");
   const announcement = health?.settings?.announcement;
@@ -136,6 +138,9 @@ export default function AppShell({ crumbs, children }: { crumbs: Crumb[]; childr
               {href === "/teams" && pendingInvites > 0 && <span className="nav-badge" aria-label={`${pendingInvites} pending invitation${pendingInvites === 1 ? "" : "s"}`}>{pendingInvites}</span>}
             </Link>
           ))}
+          {me?.is_admin && (
+            <a href={ADMIN_URL} target="_blank" rel="noreferrer"><ShieldCheck size={19} strokeWidth={1.8} />Admin ↗</a>
+          )}
         </nav>
         <div className="sidebar-foot">
           {me && (

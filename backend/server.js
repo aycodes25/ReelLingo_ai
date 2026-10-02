@@ -47,7 +47,8 @@ app.all(["/uploads", "/uploads/*"], (request, response) => {
   tusServer.handle(request, response);
 });
 
-app.use(cors({ origin: config.frontendUrl, credentials: true, exposedHeaders: ["Content-Disposition", "RateLimit", "RateLimit-Policy"] }));
+// The studio website and the separate admin website both call this API.
+app.use(cors({ origin: [config.frontendUrl, config.adminUrl], credentials: true, exposedHeaders: ["Content-Disposition", "RateLimit", "RateLimit-Policy"] }));
 app.use(generalLimiter);
 app.use(webhookRouter);
 app.use(express.json({ limit: "2mb" }));

@@ -14,17 +14,17 @@ let databaseFile;
 
 // Column types written once and rendered for each engine.
 const TYPES = {
-  id: () => (isPostgres ? "BIGSERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT"),
+  id: (pg) => (pg ? "BIGSERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT"),
   text: () => "TEXT",
-  int: () => (isPostgres ? "BIGINT" : "INTEGER"),
-  real: () => (isPostgres ? "DOUBLE PRECISION" : "REAL"),
-  bool: () => (isPostgres ? "BOOLEAN" : "INTEGER"),
-  time: () => (isPostgres ? "TIMESTAMPTZ" : "TEXT"),
+  int: (pg) => (pg ? "BIGINT" : "INTEGER"),
+  real: (pg) => (pg ? "DOUBLE PRECISION" : "REAL"),
+  bool: (pg) => (pg ? "BOOLEAN" : "INTEGER"),
+  time: (pg) => (pg ? "TIMESTAMPTZ" : "TEXT"),
 };
 
-function column([name, type, extra = ""]) {
-  let rendered = TYPES[type]();
-  if (type === "bool") rendered += ` NOT NULL DEFAULT ${/true/.test(extra) ? (isPostgres ? "TRUE" : "1") : (isPostgres ? "FALSE" : "0")}`;
+function column([name, type, extra = ""], pg = isPostgres) {
+  let rendered = TYPES[type](pg);
+  if (type === "bool") rendered += ` NOT NULL DEFAULT ${/true/.test(extra) ? (pg ? "TRUE" : "1") : (pg ? "FALSE" : "0")}`;
   else if (extra) rendered += ` ${extra}`;
   return `${name} ${rendered}`;
 }
@@ -214,6 +214,70 @@ async function existingColumns(table) {
   return new Set(sqliteQuery(`PRAGMA table_info(${table})`, []).rows.map((row) => row.name));
 }
 
+/**
+ * The full Postgres schema as SQL, for the owner to run themselves in the Supabase SQL Editor.
+ * Safe to run repeatedly. Every table gets Row Level Security and is closed to Supabase's public API roles:
+ * the backend connects as the database owner (DATABASE_URL), which isn't affected by either.
+ */
+export function postgresSchemaSql(seedStatements = []) {
+  const lines = [
+    "-- ReelLingo database schema for Supabase (Postgres).",
+    "-- Generated from backend/src/db.js by `npm run sql` — do not edit by hand.",
+    "-- Run it yourself: Supabase dashboard → SQL Editor → New query → paste this file → Run.",
+    "-- Safe to run more than once: it only adds what's missing and never deletes data.",
+    "",
+    "BEGIN;",
+    "",
+  ];
+  for (const table of SCHEMA) {
+    lines.push(`-- ${table.name}`);
+    lines.push(`CREATE TABLE IF NOT EXISTS public.${table.name} (\n  ${table.columns.map((definition) => column(definition, true)).join(",\n  ")}\n);`);
+    for (const definition of table.columns) {
+      if (definition[1] === "id" || /PRIMARY KEY/.test(definition[2] || "")) continue;
+      // Adding a NOT NULL column without a default fails on a table that already has rows, so those stay nullable.
+      const rendered = column(definition, true);
+      lines.push(`ALTER TABLE public.${table.name} ADD COLUMN IF NOT EXISTS ${/DEFAULT/.test(rendered) ? rendered : rendered.replace(/ NOT NULL/, "")};`);
+    }
+    for (const statement of table.indexes || []) lines.push(`${statement.replace(/ ON (\w+) /, " ON public.$1 ")};`);
+    lines.push(`ALTER TABLE public.${table.name} ENABLE ROW LEVEL SECURITY;`);
+    lines.push(`REVOKE ALL ON public.${table.name} FROM anon, authenticated;`);
+    lines.push("");
+  }
+  if (seedStatements.length) {
+    lines.push("-- Default plans (from .docs/monetization.md). Existing plans are left untouched.");
+    lines.push(...seedStatements, "");
+  }
+  lines.push("COMMIT;", "");
+  return lines.join("\n");
+}
+
+/** Postgres: read-only check that the tables the app needs exist, with clear instructions if not. */
+async function verifyPostgresSchema() {
+  const missing = [];
+  for (const table of SCHEMA) {
+    const present = await existingColumns(table.name);
+    if (!present.size) {
+      missing.push(`table ${table.name}`);
+      continue;
+    }
+    for (const [name] of table.columns) if (!present.has(name)) missing.push(`column ${table.name}.${name}`);
+  }
+  if (missing.length) {
+    const error = new Error(
+      `Your database is missing ${missing.length} item(s) the app needs (${missing.slice(0, 6).join(", ")}${missing.length > 6 ? ", …" : ""}).\n`
+      + "ReelLingo never changes your Supabase database by itself. To fix this, open Supabase → SQL Editor → New query,\n"
+      + "paste the contents of backend/sql/schema.sql, and click Run. Then start the backend again.",
+    );
+    error.code = "SCHEMA_MISSING";
+    throw error;
+  }
+  const unprotected = (await many(
+    "SELECT relname FROM pg_class JOIN pg_namespace ON pg_namespace.oid = relnamespace WHERE nspname = current_schema() AND relkind = 'r' AND relname = ANY($1) AND NOT relrowsecurity",
+    [SCHEMA.map((table) => table.name)],
+  )).map((row) => row.relname);
+  return { unprotected };
+}
+
 async function migrate() {
   for (const table of SCHEMA) {
     await query(`CREATE TABLE IF NOT EXISTS ${table.name} (${table.columns.map(column).join(", ")})`);
@@ -239,9 +303,18 @@ export async function initializeDatabase() {
     const SQL = await initSqlJs({ wasmBinary: readFileSync(require.resolve("sql.js/dist/sql-wasm.wasm")) });
     sqlite = existsSync(databaseFile) ? new SQL.Database(readFileSync(databaseFile)) : new SQL.Database();
   }
-  await migrate();
-  const { seedPlans } = await import("./plans.js");
-  await seedPlans();
+  if (isPostgres) {
+    // Never alter a hosted database automatically: the owner applies backend/sql/schema.sql themselves.
+    const { unprotected } = await verifyPostgresSchema();
+    if (unprotected.length) {
+      const { logger } = await import("./logger.js");
+      logger.warn({ tables: unprotected }, "Row Level Security is OFF on these tables. Run backend/sql/schema.sql in the Supabase SQL Editor to switch it on.");
+    }
+  } else {
+    await migrate();
+    const { seedPlans } = await import("./plans.js");
+    await seedPlans();
+  }
   const { loadSettings } = await import("./settings.js");
   await loadSettings();
   persist();
