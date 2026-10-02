@@ -116,10 +116,6 @@ Actual recognition and voice quality depend on the underlying OpenAI speech mode
 
 ---
 
-*Built with purpose. Built for Africa. Built for the world.*
-
----
-
 ## 🛠️ Setup, features and development
 
 Everything technical (running the app, keys, the database steps you run yourself in Supabase, the admin website, project structure and tests) is in the main **[README](../README.md)**.
