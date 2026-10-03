@@ -55,6 +55,17 @@ export const CREDIT_PACKS = [
   { code: "payg_60", minutes: 60, price_usd: 20, price_ngn: 32000 },
 ];
 
+/** The default plans as SQL inserts, for backend/sql/schema.sql (existing plans are never overwritten). */
+export function planSeedSql() {
+  const literal = (value) => (typeof value === "string" ? `'${value.replace(/'/g, "''")}'` : typeof value === "boolean" ? (value ? "TRUE" : "FALSE") : String(value));
+  return DEFAULT_PLANS.map((plan) => {
+    const values = [plan.code, plan.name, plan.blurb, plan.price_usd, plan.price_ngn, plan.videos_per_month, plan.max_video_minutes, plan.voice_clone,
+      plan.watermark, plan.priority, plan.max_targets, plan.lip_sync, plan.api_access, plan.team_seats, plan.saved_voices,
+      JSON.stringify({ features: plan.features, featured: Boolean(plan.featured) }), plan.sort, true, JSON.stringify(plan.permissions), false];
+    return `INSERT INTO public.plans (code, name, blurb, price_usd, price_ngn, videos_per_month, max_video_minutes, voice_clone, watermark, priority, max_targets, lip_sync, api_access, team_seats, saved_voices, features_json, sort, public, permissions_json, contact_sales)\n  VALUES (${values.map(literal).join(", ")})\n  ON CONFLICT (code) DO NOTHING;`;
+  });
+}
+
 export async function seedPlans() {
   for (const plan of DEFAULT_PLANS) {
     await query(

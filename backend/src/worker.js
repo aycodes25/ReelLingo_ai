@@ -4,6 +4,7 @@ import { logger } from "./logger.js";
 import { runJob } from "./pipeline.js";
 import { deleteFiles, listFiles } from "./storage.js";
 import { cleanupExpiredUploads } from "./uploads.js";
+import { checkLowBalances } from "./usage.js";
 
 let running = 0;
 let stopped = true;
@@ -66,6 +67,8 @@ export async function cleanupExpiredFiles(now = new Date()) {
   }
   if (expired) logger.info({ expired }, "Deleted files past the retention window");
   await cleanupExpiredUploads();
+  // Hourly: email admins when a paid provider is running low (Admin → API usage → alert level).
+  await checkLowBalances().catch((error) => logger.warn({ err: error }, "Low-balance check failed"));
   return expired;
 }
 

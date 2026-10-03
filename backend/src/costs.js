@@ -10,17 +10,24 @@ export function runWithJob(job, task) {
   return jobContext.run({ jobId: job.id, userId: job.user_id }, task);
 }
 
-export async function recordCost(provider, operation, units, unit, costUsd) {
-  const context = jobContext.getStore();
-  if (!context || !Number.isFinite(costUsd)) return;
+/** Records one paid-provider call for the usage dashboard. Never throws: usage tracking must not break the app. */
+export async function recordUsage({ provider, operation, units, unit, costUsd = 0, userId = null, jobId = null }) {
+  if (!Number.isFinite(costUsd) || !Number.isFinite(Number(units))) return;
   try {
     await query(
       "INSERT INTO cost_events (job_id, user_id, provider, operation, units, unit, cost_usd) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-      [context.jobId, context.userId, provider, operation, units, unit, Math.round(costUsd * 1e6) / 1e6],
+      [jobId, userId, provider, operation, Number(units), unit, Math.round(costUsd * 1e6) / 1e6],
     );
   } catch (error) {
-    logger.warn({ err: error }, "Could not record provider cost");
+    logger.warn({ err: error }, "Could not record provider usage");
   }
+}
+
+/** Records a call made while processing a job; the job and its owner come from the running job's context. */
+export async function recordCost(provider, operation, units, unit, costUsd) {
+  const context = jobContext.getStore();
+  if (!context) return;
+  await recordUsage({ provider, operation, units, unit, costUsd, userId: context.userId, jobId: context.jobId });
 }
 
 export function recordChatUsage(operation, usage) {

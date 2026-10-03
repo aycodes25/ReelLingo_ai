@@ -51,10 +51,34 @@ export const SETTINGS = [
 
   // Money
   { key: "ngn_per_usd", field: "ngnPerUsd", type: "number", min: 1, max: 100000, group: "Money", label: "Naira per US dollar (profit estimates)" },
+
+  // Provider prices: used to work out what each job and each user costs you (API usage dashboard).
+  { key: "cost_elevenlabs_per_1k_chars", field: "costs.elevenlabsPer1kChars", type: "number", min: 0, max: 10, step: 0.001, group: "Provider prices", label: "ElevenLabs voice, $ per 1,000 characters" },
+  { key: "cost_whisper_per_min", field: "costs.whisperPerMinute", type: "number", min: 0, max: 10, step: 0.0001, group: "Provider prices", label: "OpenAI Whisper transcription, $ per minute" },
+  { key: "cost_chat_input_per_m", field: "costs.chatInputPerMillion", type: "number", min: 0, max: 100, step: 0.01, group: "Provider prices", label: "OpenAI translation input, $ per 1M tokens" },
+  { key: "cost_chat_output_per_m", field: "costs.chatOutputPerMillion", type: "number", min: 0, max: 100, step: 0.01, group: "Provider prices", label: "OpenAI translation output, $ per 1M tokens" },
+  { key: "cost_scribe_per_hour", field: "costs.scribePerHour", type: "number", min: 0, max: 100, step: 0.01, group: "Provider prices", label: "ElevenLabs Scribe (multi-speaker), $ per hour" },
+  { key: "cost_isolation_per_min", field: "costs.elevenlabsIsolationPerMinute", type: "number", min: 0, max: 10, step: 0.001, group: "Provider prices", label: "ElevenLabs Voice Isolator, $ per minute" },
+  { key: "cost_openai_tts_per_1k_chars", field: "costs.openaiTtsPer1kChars", type: "number", min: 0, max: 10, step: 0.001, group: "Provider prices", label: "OpenAI backup voice, $ per 1,000 characters" },
+  { key: "cost_lipsync_per_min", field: "costs.lipsyncPerMinute", type: "number", min: 0, max: 100, step: 0.01, group: "Provider prices", label: "sync.so lip-sync, $ per minute" },
+  { key: "cost_whatsapp_per_message", field: "costs.whatsappPerMessage", type: "number", min: 0, max: 5, step: 0.0001, group: "Provider prices", label: "WhatsApp, $ per message (from Meta's rate card)" },
+  { key: "cost_email_per_message", field: "costs.emailPerMessage", type: "number", min: 0, max: 5, step: 0.0001, group: "Provider prices", label: "Email (Resend), $ per message (0 on the free tier)" },
 ];
 
+// Fields can be nested ("costs.whisperPerMinute"), so reads and writes go through these helpers.
+function getField(field) {
+  return field.split(".").reduce((value, part) => value?.[part], config);
+}
+
+function setField(field, value) {
+  const parts = field.split(".");
+  const last = parts.pop();
+  const target = parts.reduce((value, part) => value[part], config);
+  target[last] = value;
+}
+
 const BY_KEY = new Map(SETTINGS.map((setting) => [setting.key, setting]));
-const defaults = Object.fromEntries(SETTINGS.map((setting) => [setting.field, config[setting.field]]));
+const defaults = Object.fromEntries(SETTINGS.map((setting) => [setting.field, getField(setting.field)]));
 let refreshTimer = null;
 
 function coerce(setting, raw) {
@@ -80,13 +104,13 @@ export async function loadSettings() {
   for (const setting of SETTINGS) {
     if (saved.has(setting.key)) {
       try {
-        config[setting.field] = coerce(setting, JSON.parse(saved.get(setting.key)));
+        setField(setting.field, coerce(setting, JSON.parse(saved.get(setting.key))));
       } catch (error) {
         logger.warn({ err: error, key: setting.key }, "Ignoring invalid saved setting");
-        config[setting.field] = defaults[setting.field];
+        setField(setting.field, defaults[setting.field]);
       }
     } else {
-      config[setting.field] = defaults[setting.field];
+      setField(setting.field, defaults[setting.field]);
     }
   }
 }
@@ -106,7 +130,7 @@ export function listSettings() {
   return SETTINGS.map((setting) => ({
     key: setting.key, type: setting.type, group: setting.group, label: setting.label, help: setting.help || null,
     options: setting.options || null, min: setting.min ?? null, max: setting.max ?? null, step: setting.step ?? null,
-    value: config[setting.field], default: defaults[setting.field], overridden: config[setting.field] !== defaults[setting.field],
+    value: getField(setting.field), default: defaults[setting.field], overridden: getField(setting.field) !== defaults[setting.field],
   }));
 }
 

@@ -12,6 +12,9 @@ import { config } from "../config.js";
 import { purgeJob } from "../jobfiles.js";
 import { createPlan, deletePlan, getPlan, listRawPlans, PERMISSIONS, updatePlan } from "../plans.js";
 import { listSettings, updateSettings } from "../settings.js";
+import {
+  BUDGET_UNITS, clearUsageCache, dailyUsage, deleteProviderBudget, providerSummaries, setProviderBudget, setUserBudget, usageByUser, userUsageDetail,
+} from "../usage.js";
 
 const router = express.Router();
 router.use("/admin", authenticate, requireAdmin);
@@ -200,6 +203,46 @@ router.get("/admin/settings", action(async (_request, response) => {
 
 router.put("/admin/settings", action(async (request, response) => {
   response.json(await updateSettings(request.body || {}, request.userId));
+}));
+
+// ---------- API usage dashboard ----------
+router.get("/admin/usage", action(async (request, response) => {
+  if (request.query.refresh === "1") clearUsageCache();
+  const days = Math.min(Math.max(Number(request.query.days) || 30, 1), 365);
+  const [providers, daily, users] = await Promise.all([providerSummaries(), dailyUsage(days), usageByUser({ days })]);
+  response.json({
+    days,
+    providers,
+    daily,
+    users,
+    totals: {
+      cost_usd: Math.round(users.reduce((sum, user) => sum + user.cost_usd, 0) * 10000) / 10000,
+      users: users.filter((user) => user.cost_usd > 0).length,
+    },
+    units: BUDGET_UNITS,
+    openai_admin_key: Boolean(config.openaiAdminKey),
+  });
+}));
+
+router.get("/admin/usage/users/:userId", action(async (request, response) => {
+  const days = Math.min(Math.max(Number(request.query.days) || 30, 1), 365);
+  response.json(await userUsageDetail(String(request.params.userId), { days }));
+}));
+
+router.put("/admin/usage/budgets/:provider", action(async (request, response) => {
+  const budget = await setProviderBudget(String(request.params.provider), request.body || {});
+  clearUsageCache();
+  response.json(budget);
+}));
+
+router.delete("/admin/usage/budgets/:provider", action(async (request, response) => {
+  await deleteProviderBudget(String(request.params.provider));
+  clearUsageCache();
+  response.status(204).end();
+}));
+
+router.put("/admin/usage/user-budgets/:userId", action(async (request, response) => {
+  response.json({ budget: await setUserBudget(String(request.params.userId), request.body || {}) });
 }));
 
 // ---------- Teams & payments ----------

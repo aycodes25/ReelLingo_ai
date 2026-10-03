@@ -23,7 +23,7 @@ export const tusServer = new Server({
   datastore,
   maxSize: config.uploadLimitBytes,
   respectForwardedHeaders: true,
-  allowedOrigins: [config.frontendUrl],
+  allowedOrigins: [config.frontendUrl, config.adminUrl],
   allowedCredentials: true,
   allowedHeaders: ["Authorization", "X-API-Key", "X-Workspace"],
   async onIncomingRequest(request, uploadId) {

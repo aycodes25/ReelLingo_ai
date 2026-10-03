@@ -68,7 +68,9 @@ router.get("/auth/oauth/:provider", (request, response) => {
   }
   const authorize = new URL(`${config.supabaseUrl}/auth/v1/authorize`);
   authorize.searchParams.set("provider", provider);
-  authorize.searchParams.set("redirect_to", `${config.frontendUrl}/auth/callback`);
+  // ?app=admin sends the person back to the admin website instead of the studio.
+  const returnTo = request.query.app === "admin" ? config.adminUrl : config.frontendUrl;
+  authorize.searchParams.set("redirect_to", `${returnTo}/auth/callback`);
   response.redirect(authorize.toString());
 });
 

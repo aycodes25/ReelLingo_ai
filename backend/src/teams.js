@@ -59,6 +59,7 @@ export async function inviteMember(teamId, inviter, email, role = "member") {
   const team = await getTeam(teamId);
   try {
     await sendEmail({
+      userId: inviter.id, operation: "team_invite",
       to: address,
       subject: `You're invited to ${team.name} on ReelLingo`,
       text: `${inviter.email || "A teammate"} invited you to join "${team.name}" on ReelLingo. Sign in with this email address to accept: ${config.frontendUrl}/teams`,

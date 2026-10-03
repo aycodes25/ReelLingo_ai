@@ -19,6 +19,8 @@ export const config = {
   supabaseKey: process.env.SUPABASE_KEY || "",
   storageBucket: process.env.STORAGE_BUCKET || "reellingo-videos",
   openaiApiKey,
+  // Optional OpenAI *Admin* key: lets the usage dashboard read what OpenAI actually billed.
+  openaiAdminKey: process.env.OPENAI_ADMIN_KEY || "",
   openaiBaseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
   openaiTranscriptionModel: process.env.OPENAI_TRANSCRIPTION_MODEL || "whisper-1",
   openaiChatModel: process.env.OPENAI_CHAT_MODEL || "gpt-4o-mini",
@@ -45,6 +47,8 @@ export const config = {
   freeMaxVideoMinutes: process.env.FREE_MAX_VIDEO_MINUTES ? Number(process.env.FREE_MAX_VIDEO_MINUTES) : null,
   localStorageDir: resolve(process.env.LOCAL_STORAGE_DIR || "./storage"),
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
+  // The separate admin website (ReelLingo_Admin repo).
+  adminUrl: process.env.ADMIN_URL || "http://localhost:3001",
   appSecret: process.env.APP_SECRET || "reellingo-dev-secret-change-me",
   logLevel: process.env.LOG_LEVEL || "info",
   sentryDsn: process.env.SENTRY_DSN || "",
@@ -149,6 +153,8 @@ export const config = {
     elevenlabsIsolationPerMinute: number("COST_ELEVENLABS_ISOLATION_PER_MIN", 0.12),
     openaiTtsPer1kChars: number("COST_OPENAI_TTS_PER_1K_CHARS", 0.015),
     lipsyncPerMinute: number("COST_LIPSYNC_PER_MIN", 3),
+    whatsappPerMessage: number("COST_WHATSAPP_PER_MESSAGE", 0),
+    emailPerMessage: number("COST_EMAIL_PER_MESSAGE", 0),
   },
 };
 

@@ -1,5 +1,6 @@
 import { getProfile } from "./accounts.js";
 import { config } from "./config.js";
+import { recordUsage } from "./costs.js";
 import { getLanguage } from "./languages.js";
 import { logger } from "./logger.js";
 
@@ -15,7 +16,7 @@ function escapeHtml(text) {
   return String(text).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[char]);
 }
 
-export async function sendEmail({ to, subject, text, html }) {
+export async function sendEmail({ to, subject, text, html, userId = null, jobId = null, operation = "email" }) {
   if (!emailConfigured() || !to) return false;
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -23,11 +24,12 @@ export async function sendEmail({ to, subject, text, html }) {
     body: JSON.stringify({ from: config.emailFrom, to: [to], subject, text, html }),
   });
   if (!response.ok) throw new Error(`Email send failed (${response.status}): ${(await response.text()).slice(0, 300)}`);
+  await recordUsage({ provider: "resend", operation, units: 1, unit: "emails", costUsd: config.costs.emailPerMessage, userId, jobId });
   return true;
 }
 
 /** WhatsApp Business: an approved template is required outside a 24h chat window, so it's used when configured. */
-export async function sendWhatsApp({ phone, text, templateParams = [] }) {
+export async function sendWhatsApp({ phone, text, templateParams = [], userId = null, jobId = null, operation = "message" }) {
   if (!whatsappConfigured() || !phone) return false;
   const to = String(phone).replace(/[^\d]/g, "");
   if (to.length < 8) return false;
@@ -47,6 +49,7 @@ export async function sendWhatsApp({ phone, text, templateParams = [] }) {
     body: JSON.stringify(message),
   });
   if (!response.ok) throw new Error(`WhatsApp send failed (${response.status}): ${(await response.text()).slice(0, 300)}`);
+  await recordUsage({ provider: "whatsapp", operation, units: 1, unit: "messages", costUsd: config.costs.whatsappPerMessage, userId, jobId });
   return true;
 }
 
@@ -75,6 +78,7 @@ export async function notifyJob(job, event) {
     const tasks = [];
     if (profile.notify_email && profile.email) {
       tasks.push(sendEmail({
+        userId: job.user_id, jobId: job.id, operation: `job_${event}`,
         to: profile.email,
         subject: message.subject,
         text: `${message.line}\n\n${message.action}: ${message.link}\n\n— ReelLingo`,
@@ -82,7 +86,7 @@ export async function notifyJob(job, event) {
       }));
     }
     if (profile.notify_whatsapp && profile.phone) {
-      tasks.push(sendWhatsApp({ phone: profile.phone, text: `ReelLingo: ${message.line}\n${message.link}`, templateParams: [message.line, message.link] }));
+      tasks.push(sendWhatsApp({ phone: profile.phone, text: `ReelLingo: ${message.line}\n${message.link}`, templateParams: [message.line, message.link], userId: job.user_id, jobId: job.id, operation: `job_${event}` }));
     }
     const results = await Promise.allSettled(tasks);
     for (const result of results) if (result.status === "rejected") logger.warn({ err: result.reason, jobId: job.id }, "Notification failed");
