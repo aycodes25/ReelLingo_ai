@@ -22,6 +22,33 @@ router.use("/admin", authenticate, requireAdmin);
 // Naira→USD rate for margin estimates comes from Admin → Settings (NGN_PER_USD in .env by default).
 
 
+/**
+ * Turns a raw job error into a readable, groupable line: provider JSON is reduced to its message,
+ * temporary folder paths and long IDs are shortened, but small numbers (gpt-4o, chunk-0003) stay readable.
+ */
+export function errorGroup(message) {
+  let text = String(message || "Unknown error");
+  const jsonStart = text.indexOf("{");
+  if (jsonStart !== -1) {
+    try {
+      const parsed = JSON.parse(text.slice(jsonStart));
+      const detail = parsed.detail || parsed.error || parsed;
+      const inner = typeof detail === "string" ? detail : detail.message || detail.msg || detail.code || detail.type;
+      if (inner) text = `${text.slice(0, jsonStart).replace(/[\s:(]+$/, "")}: ${inner}`;
+    } catch {
+      // not JSON: keep the text as it is
+    }
+  }
+  return text
+    .replace(/[A-Za-z]:\\[^\s:]*\\(?=[^\\\s]+\.\w+)/g, "")
+    .replace(/\/tmp\/[^\s:]*\//g, "")
+    .replace(/\b(?:gen-|req_|org_|org-|sk-|proj_)\w+|\b[0-9a-f]{16,}\b/gi, "…")
+    .replace(/\b\d{5,}\b/g, "…")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 300);
+}
+
 function seconds(from, to) {
   const start = Date.parse(toIsoTimestamp(from));
   const end = Date.parse(toIsoTimestamp(to));
@@ -44,7 +71,7 @@ router.get("/admin/overview", asyncRoute(async (request, response) => {
     users.set(job.user_id, (users.get(job.user_id) || 0) + 1);
     minutes += Number(job.duration_seconds || 0) / 60;
     if (job.status === "failed" && job.error_message) {
-      const key = job.error_message.replace(/\d+/g, "#").slice(0, 120);
+      const key = errorGroup(job.error_message);
       errors.set(key, (errors.get(key) || 0) + 1);
     }
     const took = job.status === "done" ? seconds(job.started_at, job.completed_at) : null;
