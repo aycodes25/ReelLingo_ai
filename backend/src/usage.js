@@ -2,7 +2,7 @@ import { config } from "./config.js";
 import { dbTime, isPostgres, many, one, query } from "./db.js";
 import { logger } from "./logger.js";
 import { sendEmail } from "./notify.js";
-import { listFilesWithSizes } from "./storage.js";
+import { listFilesWithSizes, STORAGE_LABELS, storageProvider } from "./storage.js";
 
 /**
  * Paid providers shown on the admin "API usage" dashboard.
@@ -14,7 +14,7 @@ export const PROVIDERS = [
   { id: "sync", label: "sync.so", purpose: "Lip-sync", unit: "usd", configured: () => Boolean(config.syncApiKey) },
   { id: "resend", label: "Resend", purpose: "Email notifications", unit: "emails", configured: () => Boolean(config.resendApiKey) },
   { id: "whatsapp", label: "WhatsApp", purpose: "WhatsApp notifications", unit: "messages", configured: () => Boolean(config.whatsappToken && config.whatsappPhoneNumberId) },
-  { id: "storage", label: "Supabase Storage", purpose: "Uploaded and dubbed video files", unit: "gb", configured: () => true },
+  { id: "storage", label: "Storage", purpose: "Uploaded and dubbed video files", unit: "gb", configured: () => true },
 ];
 const PROVIDER_IDS = new Set(PROVIDERS.map((provider) => provider.id));
 export const BUDGET_UNITS = ["usd", "characters", "emails", "messages", "gb", "minutes"];
@@ -215,7 +215,7 @@ export async function providerSummaries() {
     const recorded = (await recordedByProvider(since)).get(provider.id) || { cost_usd: 0, calls: 0, units: {} };
     const summary = {
       provider: provider.id,
-      label: provider.label,
+      label: provider.id === "storage" ? STORAGE_LABELS[storageProvider()] : provider.label,
       purpose: provider.purpose,
       configured: provider.configured(),
       period_start: since.toISOString(),

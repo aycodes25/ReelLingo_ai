@@ -57,7 +57,7 @@ ReelLingo runs directly on Windows, macOS or Linux — no Docker needed.
 - **Python 3.10+** with **Demucs** and **yt-dlp** for background-music separation and link imports:
   `python -m pip install demucs soundfile yt-dlp`
   (On Windows, Demucs also needs the Microsoft Visual C++ Redistributable: `winget install Microsoft.VCRedist.2015+.x64`.)
-- A **Supabase** project (sign-in, database and video storage), an **OpenAI** API key and an **ElevenLabs** API key (a paid ElevenLabs plan is needed for voice cloning).
+- A **Supabase** project (sign-in and database), a **Cloudflare R2** bucket for video files (free tier: 10 GB, free downloads; Supabase Storage also works), an **OpenAI** API key and an **ElevenLabs** API key (a paid ElevenLabs plan is needed for voice cloning).
 
 ### Set up and start
 
@@ -76,6 +76,7 @@ All keys go in **`backend/.env`** (copy `backend/.env.example` to start). Every 
 | Needed for | Keys |
 |:---|:---|
 | **Required** | `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_KEY` (service_role), `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, `APP_SECRET`, `ADMIN_EMAILS` |
+| Video storage | `STORAGE_PROVIDER=r2`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` (leave `STORAGE_PROVIDER` empty to use Supabase Storage) |
 | Payments | `PAYSTACK_SECRET_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` |
 | Notifications | `RESEND_API_KEY`, `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` |
 | Premium & monitoring | `OPENAI_ADMIN_KEY` (OpenAI billing on the usage dashboard), `SYNC_API_KEY` (lip-sync), `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (YouTube), `SENTRY_DSN`, `CLAMAV_HOST` |
@@ -92,7 +93,7 @@ The backend **never changes your Supabase database on its own**. When it starts 
 | [`backend/sql/schema.sql`](backend/sql/schema.sql) | Creates missing ReelLingo tables and columns, turns Row Level Security on, and blocks Supabase's public API roles from these tables. Safe to run more than once; never deletes data. |
 
 To run one: Supabase dashboard → **SQL Editor** → **New query** → paste the file → **Run**.
-Also make sure the `reellingo-videos` storage bucket is **private**.
+If you store videos in Supabase Storage, make sure the `reellingo-videos` bucket is **private**. Moving to Cloudflare R2? `npm --prefix backend run storage:copy-to-r2` copies existing files across (it only reads from Supabase).
 
 When the code's tables change, `npm --prefix backend run sql` regenerates `schema.sql` (without connecting to any database) and you run it again.
 
@@ -110,7 +111,8 @@ For Google/Facebook sign-in on the admin site, add `http://localhost:3001/auth/c
 |:---|:---|
 | Website | Next.js 15 (App Router), React 18, TypeScript |
 | API & worker | Node.js, Express |
-| Database & auth | Supabase (Postgres + Auth + Storage); SQLite for local tests |
+| Database & auth | Supabase (Postgres + Auth); SQLite for local tests |
+| File storage | Cloudflare R2 (S3-compatible), or Supabase Storage |
 | Speech & translation | OpenAI Whisper and GPT-4o mini; ElevenLabs Scribe for multi-speaker |
 | Voices | ElevenLabs (voice cloning and speech) |
 | Media | FFmpeg, Demucs (music separation), yt-dlp (link imports), sync.so (lip-sync) |

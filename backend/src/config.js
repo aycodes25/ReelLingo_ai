@@ -18,6 +18,17 @@ export const config = {
   supabaseUrl: process.env.SUPABASE_URL || "",
   supabaseKey: process.env.SUPABASE_KEY || "",
   storageBucket: process.env.STORAGE_BUCKET || "reellingo-videos",
+  // Where video files live: "r2" (Cloudflare R2), "supabase" (Supabase Storage) or "local" (this computer).
+  // Empty = automatic: R2 when its keys are set, else Supabase when configured, else local files.
+  storageProvider: (process.env.STORAGE_PROVIDER || "").toLowerCase(),
+  r2: {
+    accountId: process.env.R2_ACCOUNT_ID || "",
+    accessKeyId: process.env.R2_ACCESS_KEY_ID || "",
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || "",
+    bucket: process.env.R2_BUCKET || "reellingo-videos",
+    // Optional: a full S3 endpoint (e.g. for the EU jurisdiction: https://<account>.eu.r2.cloudflarestorage.com).
+    endpoint: process.env.R2_ENDPOINT || "",
+  },
   openaiApiKey,
   // Optional OpenAI *Admin* key: lets the usage dashboard read what OpenAI actually billed.
   openaiAdminKey: process.env.OPENAI_ADMIN_KEY || "",
