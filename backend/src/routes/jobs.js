@@ -11,6 +11,7 @@ import { countInputUsers, createJob, getJob, listJobs, updateJob } from "../data
 import { one } from "../db.js";
 import { asyncRoute, authenticate, blockDuringMaintenance, HttpError, jobLimiter, jobOutput, requireLivePipeline, workspace } from "../http.js";
 import { purgeJob } from "../jobfiles.js";
+import { userBudgetStatus } from "../usage.js";
 import { classifyImportUrl } from "../importer.js";
 import { getLanguage } from "../languages.js";
 import { lipSyncUnavailableReason } from "../lipsync.js";
@@ -233,6 +234,14 @@ router.post("/jobs", authenticate, blockDuringMaintenance, workspace, jobLimiter
       mediaType = probed.hasVideo ? "video" : "audio";
       if (mediaType === "audio" && permissions.audio_only === false) {
         throw new HttpError(402, `Audio-only dubbing isn't included in your ${plan.plan.name} plan.`, { code: "feature", feature: "audio_only" });
+      }
+    }
+
+    // Per-user spending caps set by an admin (Admin → API usage). Admins themselves are never capped.
+    if (!request.user.isAdmin) {
+      const budget = await userBudgetStatus(request.userId);
+      if (budget?.exceeded) {
+        throw new HttpError(402, `You've reached your usage limit for this month. Contact ${config.supportEmail} to raise it.`, { code: "budget" });
       }
     }
 

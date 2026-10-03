@@ -140,6 +140,45 @@ export async function listFiles(prefix) {
   return files;
 }
 
+/** Every stored file with its size in bytes (for storage usage on the admin dashboard). */
+export async function listFilesWithSizes(prefix = "") {
+  if (!hasSupabase) {
+    const { readdir } = await import("node:fs/promises");
+    const walk = async (directory, base) => {
+      let entries = [];
+      try {
+        entries = await readdir(directory, { withFileTypes: true });
+      } catch {
+        return [];
+      }
+      const nested = await Promise.all(entries.map(async (entry) => {
+        const full = join(directory, entry.name);
+        if (entry.isDirectory()) return walk(full, `${base}${entry.name}/`);
+        return [{ path: `${base}${entry.name}`, size: (await stat(full)).size }];
+      }));
+      return nested.flat();
+    };
+    return walk(prefix ? localPath(prefix) : config.localStorageDir, prefix ? (prefix.endsWith("/") ? prefix : `${prefix}/`) : "");
+  }
+  const base = prefix ? (prefix.endsWith("/") ? prefix : `${prefix}/`) : "";
+  const files = [];
+  for (let offset = 0; offset < 100_000; offset += 1000) {
+    const response = await fetch(`${config.supabaseUrl}/storage/v1/object/list/${bucket}`, {
+      method: "POST",
+      headers: supabaseHeaders("application/json"),
+      body: JSON.stringify({ prefix: base, limit: 1000, offset }),
+    });
+    if (!response.ok) break;
+    const items = await response.json();
+    for (const item of items) {
+      if (item.id) files.push({ path: `${base}${item.name}`, size: Number(item.metadata?.size || 0) });
+      else files.push(...await listFilesWithSizes(`${base}${item.name}`));
+    }
+    if (items.length < 1000) break;
+  }
+  return files;
+}
+
 function localSignature(path, expires, download) {
   return createHmac("sha256", config.appSecret).update(`${path}\n${expires}\n${download || ""}`).digest("base64url");
 }

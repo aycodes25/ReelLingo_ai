@@ -29,7 +29,7 @@ A creator uploads a video (or pastes a link). ReelLingo:
 | **Sharing** | Public watch pages with a Dub/Original comparison player, one-click YouTube publishing |
 | **Business** | Plans, Paystack (₦) and Stripe ($) checkout, pay-as-you-go credits, referrals, team workspaces, API keys |
 | **Operations** | Job queue that survives restarts, retries that resume where they stopped, email and WhatsApp notifications, live progress, rate limiting, virus scanning, structured logs, Sentry, file retention |
-| **Admin** | A separate admin website ([ReelLingo_Admin](https://github.com/aycodes25/ReelLingo_Admin)) to manage users, plans, app-wide settings, teams and payments |
+| **Admin** | A separate admin website ([ReelLingo_Admin](https://github.com/aycodes25/ReelLingo_Admin)) to manage users, plans, app-wide settings, teams and payments, plus an API usage dashboard: balance left at each paid provider, usage per user, monthly per-user limits and low-balance email alerts |
 
 ## Plans
 
@@ -78,7 +78,7 @@ All keys go in **`backend/.env`** (copy `backend/.env.example` to start). Every 
 | **Required** | `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_KEY` (service_role), `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, `APP_SECRET`, `ADMIN_EMAILS` |
 | Payments | `PAYSTACK_SECRET_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` |
 | Notifications | `RESEND_API_KEY`, `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` |
-| Premium & monitoring | `SYNC_API_KEY` (lip-sync), `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (YouTube), `SENTRY_DSN`, `CLAMAV_HOST` |
+| Premium & monitoring | `OPENAI_ADMIN_KEY` (OpenAI billing on the usage dashboard), `SYNC_API_KEY` (lip-sync), `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (YouTube), `SENTRY_DSN`, `CLAMAV_HOST` |
 
 Optional features stay switched off until their keys are added. Business settings — which features are on, limits, maintenance mode, announcements — are changed live from the admin website.
 

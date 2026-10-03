@@ -148,6 +148,22 @@ export const SCHEMA = [
     indexes: ["CREATE INDEX IF NOT EXISTS cost_events_job ON cost_events (job_id)", "CREATE INDEX IF NOT EXISTS cost_events_created ON cost_events (created_at)"],
   },
   {
+    // What the owner bought from each paid provider (when the provider can't report it), for the usage dashboard.
+    name: "provider_budgets",
+    columns: [
+      ["provider", "text", "PRIMARY KEY"], ["kind", "text", "NOT NULL DEFAULT 'usd'"], ["amount", "real", "NOT NULL DEFAULT 0"],
+      ["unit", "text"], ["period", "text", "NOT NULL DEFAULT 'monthly'"], ["started_at", "time"], ["alert_percent", "int", "NOT NULL DEFAULT 80"],
+      ["notes", "text"], ["last_alert_at", "time"], ["updated_at", "time"],
+    ],
+  },
+  {
+    // Optional monthly spending caps for individual users.
+    name: "user_budgets",
+    columns: [
+      ["user_id", "text", "PRIMARY KEY"], ["monthly_usd_cap", "real"], ["monthly_characters_cap", "int"], ["notes", "text"], ["updated_at", "time"],
+    ],
+  },
+  {
     name: "app_settings",
     columns: [["key", "text", "PRIMARY KEY"], ["value", "text"], ["updated_at", "time"], ["updated_by", "text"]],
   },

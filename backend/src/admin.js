@@ -327,6 +327,7 @@ export async function emailUser(userId, subject, message) {
   const text = String(message || "").trim();
   if (!subject || !text) throw new Error("Write a subject and a message.");
   await sendEmail({
+    userId, operation: "admin_message",
     to: profile.email,
     subject: String(subject).slice(0, 200),
     text,

@@ -390,6 +390,46 @@ CREATE INDEX IF NOT EXISTS cost_events_created ON public.cost_events (created_at
 ALTER TABLE public.cost_events ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.cost_events FROM anon, authenticated;
 
+-- provider_budgets
+CREATE TABLE IF NOT EXISTS public.provider_budgets (
+  provider TEXT PRIMARY KEY,
+  kind TEXT NOT NULL DEFAULT 'usd',
+  amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+  unit TEXT,
+  period TEXT NOT NULL DEFAULT 'monthly',
+  started_at TIMESTAMPTZ,
+  alert_percent BIGINT NOT NULL DEFAULT 80,
+  notes TEXT,
+  last_alert_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ
+);
+ALTER TABLE public.provider_budgets ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'usd';
+ALTER TABLE public.provider_budgets ADD COLUMN IF NOT EXISTS amount DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE public.provider_budgets ADD COLUMN IF NOT EXISTS unit TEXT;
+ALTER TABLE public.provider_budgets ADD COLUMN IF NOT EXISTS period TEXT NOT NULL DEFAULT 'monthly';
+ALTER TABLE public.provider_budgets ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+ALTER TABLE public.provider_budgets ADD COLUMN IF NOT EXISTS alert_percent BIGINT NOT NULL DEFAULT 80;
+ALTER TABLE public.provider_budgets ADD COLUMN IF NOT EXISTS notes TEXT;
+ALTER TABLE public.provider_budgets ADD COLUMN IF NOT EXISTS last_alert_at TIMESTAMPTZ;
+ALTER TABLE public.provider_budgets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
+ALTER TABLE public.provider_budgets ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.provider_budgets FROM anon, authenticated;
+
+-- user_budgets
+CREATE TABLE IF NOT EXISTS public.user_budgets (
+  user_id TEXT PRIMARY KEY,
+  monthly_usd_cap DOUBLE PRECISION,
+  monthly_characters_cap BIGINT,
+  notes TEXT,
+  updated_at TIMESTAMPTZ
+);
+ALTER TABLE public.user_budgets ADD COLUMN IF NOT EXISTS monthly_usd_cap DOUBLE PRECISION;
+ALTER TABLE public.user_budgets ADD COLUMN IF NOT EXISTS monthly_characters_cap BIGINT;
+ALTER TABLE public.user_budgets ADD COLUMN IF NOT EXISTS notes TEXT;
+ALTER TABLE public.user_budgets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
+ALTER TABLE public.user_budgets ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.user_budgets FROM anon, authenticated;
+
 -- app_settings
 CREATE TABLE IF NOT EXISTS public.app_settings (
   key TEXT PRIMARY KEY,
