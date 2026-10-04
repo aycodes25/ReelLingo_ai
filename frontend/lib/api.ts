@@ -430,7 +430,7 @@ export function getBilling(): Promise<BillingInfo> {
   return request<BillingInfo>("/billing", { context: "Could not load billing" });
 }
 
-export function startCheckout(provider: "paystack" | "stripe", choice: { plan?: string; pack?: string }): Promise<{ url: string; reference: string }> {
+export function startCheckout(provider: "paystack" | "stripe", choice: { plan?: string; pack?: string; auto_renew?: boolean }): Promise<{ url: string; reference: string }> {
   return request("/billing/checkout", { method: "POST", json: { provider, ...choice }, context: "Could not start checkout" });
 }
 

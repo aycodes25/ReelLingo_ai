@@ -12,6 +12,7 @@ type Provider = "paystack" | "stripe";
 export default function BillingPage() {
   const [billing, setBilling] = useState<BillingInfo | null>(null);
   const [provider, setProvider] = useState<Provider>("paystack");
+  const [autoRenew, setAutoRenew] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<{ tone: "error" | "success"; text: string } | null>(null);
 
@@ -27,7 +28,7 @@ export default function BillingPage() {
     setBusy(choice.plan || choice.pack || "");
     setMessage(null);
     try {
-      const { url } = await startCheckout(provider, choice);
+      const { url } = await startCheckout(provider, choice.plan && provider === "paystack" ? { ...choice, auto_renew: autoRenew } : choice);
       window.location.href = url;
     } catch (error) {
       setMessage({ tone: "error", text: error instanceof Error ? error.message : "Checkout failed." });
@@ -92,6 +93,16 @@ export default function BillingPage() {
               )}
             </div>
           </section>
+
+          {provider === "paystack" && billing.paystack_auto_renew && (
+            <div className="pay-method">
+              <span>How do you want to pay for a plan?</span>
+              <div className="segmented" role="group" aria-label="How to pay for a plan">
+                <button type="button" aria-pressed={autoRenew} className={autoRenew ? "is-on" : ""} onClick={() => setAutoRenew(true)}>Card · renews every month</button>
+                <button type="button" aria-pressed={!autoRenew} className={!autoRenew ? "is-on" : ""} onClick={() => setAutoRenew(false)}>Transfer, USSD or card · one month</button>
+              </div>
+            </div>
+          )}
 
           <div className="pricing-grid app-pricing">
             {billing.plans.map((plan) => {

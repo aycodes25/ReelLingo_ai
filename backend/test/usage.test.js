@@ -43,7 +43,8 @@ const { activateSubscription } = await import("../src/billing.js");
 const { ensureProfile } = await import("../src/accounts.js");
 const { recordUsage } = await import("../src/costs.js");
 const { uploadBuffer } = await import("../src/storage.js");
-const { checkLowBalances, clearUsageCache, periodStart } = await import("../src/usage.js");
+const { checkLowBalances, clearUsageCache, periodStart, providerSummaries } = await import("../src/usage.js");
+const { config } = await import("../src/config.js");
 
 test("the API usage dashboard shows balances, usage per user, budgets and alerts", async (context) => {
   await database.initializeDatabase();
@@ -100,9 +101,27 @@ test("the API usage dashboard shows balances, usage per user, budgets and alerts
   assert.equal(openai.balance.remaining, 9.58);
   assert.equal(openai.balance.status, "low", "4.2% used is past the 3% alert level");
 
+  const resend = usage.providers.find((provider) => provider.provider === "resend");
+  assert.equal(resend.balance.source, "free_tier", "Resend's free 3,000 emails a month are shown without entering anything");
+  assert.equal(resend.balance.purchased, 3000);
+  assert.equal(resend.balance.remaining, 3000 - (resend.recorded.units.emails || 0));
+
   const storage = usage.providers.find((provider) => provider.provider === "storage");
   assert.equal(storage.storage.files, 3);
   assert.equal(storage.storage.total_bytes, 6000);
+  assert.equal(storage.balance, null, "a local folder has no free tier to measure against");
+
+  config.storageProvider = "r2"; // the measured files are cached, so this only changes the label and free tier
+  try {
+    const r2 = (await providerSummaries()).find((provider) => provider.provider === "storage");
+    assert.equal(r2.label, "Cloudflare R2");
+    assert.equal(r2.balance.source, "free_tier");
+    assert.equal(r2.balance.purchased, 10, "R2's free 10 GB is shown without entering anything");
+    assert.equal(r2.balance.used, 0.000006);
+    assert.equal(r2.balance.status, "ok");
+  } finally {
+    config.storageProvider = "";
+  }
 
   assert.deepEqual(usage.users.map((user) => user.email), ["ade@example.com", "kemi@example.com"], "heaviest user first");
   const adeRow = usage.users[0];
