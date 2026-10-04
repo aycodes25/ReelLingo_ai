@@ -157,3 +157,15 @@ test("backend/sql/schema.sql matches the schema in code (run `npm run sql` after
   }
   assert.doesNotMatch(onDisk, /DROP |DELETE FROM|TRUNCATE/i, "the schema file never removes data");
 });
+
+test("failure reasons are grouped into short readable lines", async () => {
+  const { errorGroup } = await import("../src/routes/admin.js");
+  assert.equal(
+    errorGroup('Could not clone the speaker from this video (402): {"detail":{"type":"payment_required","message":"Your subscription does not include instant voice cloning."}}'),
+    "Could not clone the speaker from this video (402): Your subscription does not include instant voice cloning.",
+  );
+  assert.equal(errorGroup(String.raw`Transcription failed for C:\Users\Hp\AppData\Local\Temp\reellingo-12-abc\chunk-0003.wav: Connection error.`), "Transcription failed for chunk-0003.wav: Connection error.");
+  assert.equal(errorGroup("Transcription failed for /tmp/reellingo-7-x/chunks/chunk-0001.wav: Connection error."), "Transcription failed for chunk-0001.wav: Connection error.");
+  assert.match(errorGroup("404 The model `gpt-4o-mini-tts` does not exist"), /gpt-4o-mini-tts/, "small numbers stay readable");
+  assert.doesNotMatch(errorGroup("Too large in organization `org_01k2m9f4afwee7y8qy3fn1a2dt`"), /org_01/, "account IDs are hidden");
+});

@@ -8,9 +8,13 @@
     "dev": "node --watch server.js",
     "worker": "node worker.js",
     "test": "node --test --test-concurrency=1",
-    "sql": "node scripts/generate-sql.mjs"
+    "sql": "node scripts/generate-sql.mjs",
+    "storage:copy-to-r2": "node scripts/copy-storage-to-r2.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1146.0",
+    "@aws-sdk/lib-storage": "^3.1146.0",
+    "@aws-sdk/s3-request-presigner": "^3.1146.0",
     "@sentry/node": "^11.1.0",
     "@tus/file-store": "^2.1.1",
     "@tus/server": "^2.4.5",
@@ -27,5 +31,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "aws-sdk-client-mock": "^4.1.0"
   }
 }

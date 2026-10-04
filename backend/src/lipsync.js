@@ -16,7 +16,7 @@ export function lipSyncAvailable() {
 export function lipSyncUnavailableReason() {
   if (!config.featureLipSync) return "Lip-sync is currently turned off.";
   if (!config.syncApiKey) return "Lip-sync needs SYNC_API_KEY (sync.so) in backend/.env.";
-  if (!hasRemoteStorage()) return "Lip-sync needs Supabase storage so the lip-sync service can fetch your video.";
+  if (!hasRemoteStorage()) return "Lip-sync needs cloud storage (Cloudflare R2 or Supabase) so the lip-sync service can fetch your video.";
   return null;
 }
 

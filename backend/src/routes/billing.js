@@ -32,6 +32,7 @@ router.get("/billing", authenticate, workspace, asyncRoute(async (request, respo
     plans: await listPlans(),
     packs: config.featurePayg ? CREDIT_PACKS : [],
     providers: billingProviders(),
+    paystack_auto_renew: Object.values(config.paystackPlanCodes).some(Boolean),
     payments: await paymentHistory(plan.billingId),
     workspace: request.workspace.teamId ? { team_id: request.workspace.teamId, role: request.workspace.role } : null,
   });
@@ -48,6 +49,7 @@ router.post("/billing/checkout", authenticate, blockDuringMaintenance, workspace
       billingId: request.workspace.teamId ? `team:${request.workspace.teamId}` : request.userId,
       planCode: request.body?.plan || null,
       packCode: request.body?.pack || null,
+      autoRenew: request.body?.auto_renew !== false,
     });
     response.json(result);
   } catch (error) {

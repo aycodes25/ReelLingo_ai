@@ -39,7 +39,7 @@ Object.assign(process.env, {
 const { app } = await import("../server.js");
 const database = await import("../src/database.js");
 const { createApiKey } = await import("../src/auth.js");
-const { activateSubscription } = await import("../src/billing.js");
+const { activateSubscription, createCheckout } = await import("../src/billing.js");
 const { grantCredit, listAvailableCredits } = await import("../src/accounts.js");
 const { config } = await import("../src/config.js");
 const { query } = await import("../src/db.js");
@@ -192,6 +192,28 @@ test("live API: uploads, batches, review, sharing, deletion, quotas and webhooks
   }
   const credits = await listAvailableCredits("studio-user");
   assert.deepEqual(credits.map((credit) => credit.max_minutes), [15], "webhook retries don't grant twice");
+
+  // Paystack checkout: with a plan code the payment renews automatically (cards only); "pay once" leaves it out so
+  // transfer and USSD are offered too.
+  config.paystackPlanCodes.creator = "PLN_creator_test";
+  const sentToPaystack = [];
+  const fetchBeforeCheckout = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    if (!String(url).startsWith("https://api.paystack.co/")) return fetchBeforeCheckout(url, options);
+    sentToPaystack.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({ status: true, data: { authorization_url: "https://checkout.paystack.com/x" } }), { status: 200 });
+  };
+  try {
+    const buyer = { id: "studio-user", email: "studio@example.com" };
+    await createCheckout({ provider: "paystack", user: buyer, billingId: "studio-user", planCode: "creator" });
+    await createCheckout({ provider: "paystack", user: buyer, billingId: "studio-user", planCode: "creator", autoRenew: false });
+    assert.equal(sentToPaystack[0].plan, "PLN_creator_test");
+    assert.equal(sentToPaystack[0].amount, 4000000, "₦40,000 in kobo");
+    assert.equal(sentToPaystack[1].plan, undefined, "pay once: no plan, so transfer and USSD are allowed");
+  } finally {
+    globalThis.fetch = fetchBeforeCheckout;
+    config.paystackPlanCodes.creator = "";
+  }
 
   // Stripe webhook signatures are verified too.
   const stripeBody = JSON.stringify({ type: "customer.subscription.deleted", data: { object: { id: "sub_x" } } });

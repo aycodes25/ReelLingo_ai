@@ -16,7 +16,7 @@ import { emailConfigured, whatsappConfigured } from "./src/notify.js";
 import { billingProviders } from "./src/billing.js";
 import { scannerConfigured } from "./src/scan.js";
 import { publicSettings, startSettingsRefresh, stopSettingsRefresh } from "./src/settings.js";
-import { localPath, verifyLocalSignature } from "./src/storage.js";
+import { localPath, STORAGE_LABELS, storageProvider, verifyLocalSignature } from "./src/storage.js";
 import { tusServer } from "./src/uploads.js";
 import { startWorker, stopWorker } from "./src/worker.js";
 import { youtubeConfigured } from "./src/youtube.js";
@@ -90,6 +90,7 @@ app.get("/health", (_request, response) => {
       youtube: youtubeConfigured(),
       virusScan: scannerConfigured(),
       worker: config.workerMode,
+      storage: STORAGE_LABELS[storageProvider()],
     },
     settings: publicSettings(),
   });
