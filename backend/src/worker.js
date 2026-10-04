@@ -1,6 +1,8 @@
 import { config } from "./config.js";
-import { claimNextJob, countInputUsers, listExpiredJobs, requeueStaleJobs, touchJob, updateJob } from "./database.js";
+import { claimNextJob, countInputUsers, getJob, listExpiredJobs, requeueStaleJobs, touchJob, updateJob } from "./database.js";
 import { logger } from "./logger.js";
+import { refundRun } from "./minutes.js";
+import { expireStaleReviews } from "./reviews.js";
 import { runJob } from "./pipeline.js";
 import { deleteFiles, listFiles } from "./storage.js";
 import { cleanupExpiredUploads } from "./uploads.js";
@@ -23,6 +25,7 @@ async function runClaimed(job) {
     } catch (error) {
       logger.error({ err: error, jobId: job.id }, "Job crashed");
       await updateJob(job.id, { status: "failed", error_message: error.message }).catch(() => undefined);
+      await refundRun(await getJob(job.id)).catch(() => undefined);
     } finally {
       clearInterval(heartbeat);
       running -= 1;
@@ -69,6 +72,12 @@ export async function cleanupExpiredFiles(now = new Date()) {
   await cleanupExpiredUploads();
   // Hourly: email admins when a paid provider is running low (Admin → API usage → alert level).
   await checkLowBalances().catch((error) => logger.warn({ err: error }, "Low-balance check failed"));
+  // Hourly: human reviews nobody picked up in time continue without review (and are refunded).
+  const reviews = await expireStaleReviews().catch((error) => {
+    logger.warn({ err: error }, "Review expiry check failed");
+    return 0;
+  });
+  if (reviews) logger.info({ reviews }, "Continued projects whose human review timed out");
   return expired;
 }
 

@@ -14,12 +14,14 @@ export interface DetectedLanguage {
 }
 
 export interface JobOutputFile {
-  kind: "video" | "audio" | "subtitles" | "captioned" | "format" | "lipsync";
+  kind: "video" | "audio" | "subtitles" | "captioned" | "format" | "lipsync" | "clip";
   format: string | null;
   aspect: string | null;
   label: string;
   url: string | null;
   download_url: string | null;
+  start?: number | null;
+  end?: number | null;
 }
 
 export interface JobOptions {
@@ -33,6 +35,9 @@ export interface JobOptions {
   watermark: boolean;
   voice_id: number | null;
   trim_seconds: number | null;
+  mode: "dub" | "subtitles";
+  human_review: boolean;
+  nigerian_voice: string | null;
 }
 
 export interface JobMetadata {
@@ -44,7 +49,7 @@ export interface JobMetadata {
 export interface Speaker {
   id: string;
   label: string;
-  voice?: "clone" | "saved" | "standard";
+  voice?: "clone" | "saved" | "standard" | "native";
 }
 
 export interface YoutubeState {
@@ -83,7 +88,12 @@ export interface Job {
   speakers: Speaker[] | null;
   metadata: JobMetadata | null;
   options: JobOptions;
-  review_state: "pending" | "approved" | null;
+  review_state: "pending" | "approved" | "human_pending" | null;
+  minutes_charged: number | null;
+  clips_pending: boolean;
+  youtube_languages: YoutubeLanguageResult[];
+  human_reviewed_at: string | null;
+  review_note: string | null;
   redub_count: number;
   max_redubs: number;
   batch_id: string | null;
@@ -96,6 +106,26 @@ export interface Job {
   files_expired: boolean;
   attempts: number;
   jobs?: Job[];
+}
+
+export interface YoutubeLanguageResult {
+  video_id: string;
+  title: string;
+  language: string;
+  localized: boolean;
+  captions_id: string | null;
+  notes: string[];
+  added_at?: string;
+}
+
+export interface YoutubeVideo {
+  id: string;
+  title: string;
+  thumbnail: string | null;
+  published_at: string | null;
+  duration_seconds: number | null;
+  privacy: string | null;
+  default_language: string | null;
 }
 
 export interface LanguageOption {
@@ -119,6 +149,7 @@ export interface ApiHealth {
     email?: boolean;
     whatsapp?: boolean;
     youtube?: boolean;
+    nativeVoices?: boolean;
     virusScan?: boolean;
     worker?: string;
   };
@@ -131,6 +162,38 @@ export interface PublicSettings {
   announcement: { text: string; tone: "info" | "success" | "warn" } | null;
   support: { email: string; whatsapp: string };
   features: Record<string, boolean>;
+  pricing?: { weights: MinuteWeights; referral_bonus_minutes: number; referral_new_user_minutes: number };
+  legal?: { company: string; address: string; privacy_email: string; terms_version: string };
+}
+
+/** How many minutes each extra uses per minute of video (dubbing itself is 1). */
+export interface MinuteWeights {
+  subtitles: number;
+  lipSync: number;
+  humanReview: number;
+  clips: number;
+}
+
+/** Minutes left: the plan's monthly allowance (resets on resets_at) plus never-expiring extra minutes. */
+export interface MinuteBalance {
+  plan_allowance: number;
+  plan_used: number;
+  plan_left: number;
+  topup_left: number;
+  available: number;
+  resets_at: string;
+  period_start: string;
+}
+
+export interface MinuteLedgerEntry {
+  id: number;
+  delta: number;
+  bucket: "plan" | "topup";
+  kind: string;
+  job_id: number | null;
+  reference: string | null;
+  note: string | null;
+  created_at: string;
 }
 
 export interface Plan {
@@ -139,6 +202,9 @@ export interface Plan {
   blurb: string;
   price_usd: number;
   price_ngn: number;
+  price_usd_yearly: number;
+  price_ngn_yearly: number;
+  minutes_per_month: number;
   videos_per_month: number;
   max_video_minutes: number;
   voice_clone: boolean;
@@ -165,15 +231,10 @@ export interface CreditPack {
   price_ngn: number;
 }
 
-export interface Credit {
-  id: number;
-  max_minutes: number;
-  source: string;
-}
-
 export interface SubscriptionInfo {
   status: string;
   provider: string | null;
+  billing_cycle?: "monthly" | "yearly";
   current_period_end: string | null;
   cancel_at_period_end: boolean;
 }
@@ -182,11 +243,11 @@ export interface Usage {
   tier: string;
   plan: Plan;
   subscription: SubscriptionInfo | null;
+  minutes: MinuteBalance;
   videos_this_month: number;
   minutes_this_month: number;
-  max_videos_per_month: number;
   max_video_minutes: number;
-  credits: Credit[];
+  weights: MinuteWeights;
 }
 
 export interface TeamSummary {
@@ -208,8 +269,10 @@ export interface Me {
   is_admin: boolean;
   plan: Usage;
   teams: TeamSummary[];
-  referral: { code: string; link: string; invited: number; rewarded: number; bonus_minutes: number; bonus_videos: number };
+  referral: { code: string; link: string; invited: number; rewarded: number; bonus_minutes: number; new_user_minutes: number };
   channels: { email: boolean; whatsapp: boolean };
+  is_reviewer: boolean;
+  terms: { accepted_at: string | null; accepted_version: string | null; current_version: string };
 }
 
 export interface SessionUser {
@@ -248,6 +311,7 @@ export interface Payment {
   kind: string;
   plan_code: string | null;
   credit_pack: string | null;
+  billing_cycle?: string | null;
   amount: number;
   currency: string;
   status: string;
@@ -258,13 +322,17 @@ export interface BillingInfo {
   tier: string;
   plan: Plan;
   subscription: SubscriptionInfo | null;
-  credits: Credit[];
-  usage: { videos_this_month: number; max_videos_per_month: number; minutes_this_month: number };
+  minutes: MinuteBalance;
+  usage: { videos_this_month: number; minutes_this_month: number };
   plans: Plan[];
   packs: CreditPack[];
   providers: { paystack: boolean; stripe: boolean };
+  yearly: boolean;
+  weights: MinuteWeights;
   /** Paystack plan codes are set, so card payments for a plan can renew automatically. */
   paystack_auto_renew?: boolean;
+  /** Plan keys with a Paystack plan code, e.g. "creator" or "creator_yearly". */
+  paystack_auto_renew_plans?: string[];
   payments: Payment[];
   workspace: { team_id: number; role: string } | null;
 }
@@ -317,5 +385,34 @@ export interface CreateJobOptions {
   formats: string[];
   lipSync: boolean;
   trimToFit?: boolean;
+  mode: "dub" | "subtitles";
+  humanReview: boolean;
+  nigerianVoice?: string | null;
+  rightsConfirmed: boolean;
+  voiceConsent: boolean;
+}
+
+export interface ReviewTask {
+  id: number;
+  job_id: number;
+  language: string;
+  language_name: string;
+  status: "open" | "claimed" | "submitted" | "paid" | "expired";
+  reviewer_id: string | null;
+  minutes: number;
+  payout_ngn: number;
+  claimed_at: string | null;
+  submitted_at: string | null;
+  paid_at: string | null;
+  notes: string | null;
+  created_at: string | null;
+  job: { id: number; source_language: string; target_language: string; duration_seconds: number | null; original_filename: string | null; lines: number } | null;
+}
+
+export interface ReviewerHome {
+  reviewer: { user_id: string; email: string; name: string; languages: string[] };
+  open: ReviewTask[];
+  mine: ReviewTask[];
+  earnings: { owed_ngn: number; paid_ngn: number; reviews: number; rate_ngn_per_minute: number };
 }
 

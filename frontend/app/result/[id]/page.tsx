@@ -4,18 +4,20 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
-  ArrowRight, AudioLines, ChevronRight, CircleAlert, CircleCheck, Copy, Download, Facebook, FileAudio, FileText, FileVideo, Globe, Hash, ImageIcon,
-  Languages, Linkedin, LoaderCircle, Mail, MessageCircle, Mic, PencilLine, RotateCcw, Share2, Sparkles, Trash2, Twitter, Volume2, Youtube,
+  ArrowRight, AudioLines, ChevronRight, CircleAlert, CircleCheck, Clapperboard, Copy, Download, Facebook, FileAudio, FileText, FileVideo, Globe, Hash,
+  ImageIcon, Languages, Linkedin, LoaderCircle, Mail, MessageCircle, Mic, PencilLine, RotateCcw, Scissors, Share2, Sparkles, Trash2, Twitter, UserCheck,
+  Volume2, Youtube,
 } from "lucide-react";
 import AppShell from "@/components/AppShell";
 import VideoPlayer, { type VideoPlayerHandle } from "@/components/VideoPlayer";
 import {
-  deleteJob, getApiHealth, getIntegrations, getJob, getJobs, getLanguages, getVoices, publishToYoutube, saveVoiceFromJob, shareJob,
+  addLanguageToYoutube, ApiError, deleteJob, getApiHealth, getIntegrations, getJob, getJobs, getLanguages, getVoices, getYoutubeVideos, publishToYoutube,
+  requestClips, saveVoiceFromJob, shareJob,
 } from "@/lib/api";
 import {
-  clock, downloadText, languageName, projectFileName, projectTitle, relativeTime, segmentsToText, sourceLabel, timestamp,
+  clock, downloadText, formatMinutes, languageName, projectFileName, projectTitle, relativeTime, segmentsToText, sourceLabel, timestamp,
 } from "@/lib/format";
-import type { Job, JobOutputFile, LanguageOption } from "@/lib/types";
+import type { Job, JobOutputFile, LanguageOption, MinuteWeights, YoutubeVideo } from "@/lib/types";
 
 const PREVIEW_LINES = 3;
 
@@ -43,6 +45,10 @@ export default function ResultPage() {
   const [voiceSlots, setVoiceSlots] = useState<{ used: number; limit: number } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [features, setFeatures] = useState<Record<string, boolean>>({});
+  const [weights, setWeights] = useState<MinuteWeights | null>(null);
+  const [ytVideos, setYtVideos] = useState<YoutubeVideo[] | null>(null);
+  const [ytVideo, setYtVideo] = useState("");
+  const [ytLanguageError, setYtLanguageError] = useState<string | null>(null);
   const playerRef = useRef<VideoPlayerHandle>(null);
 
   useEffect(() => {
@@ -53,8 +59,18 @@ export default function ResultPage() {
     getJobs(12).then((items) => setRecent(items.filter((item) => item.id !== jobId && item.status === "done").slice(0, 3))).catch(() => undefined);
     getIntegrations().then((result) => setYoutube(result.youtube)).catch(() => undefined);
     getVoices().then((result) => setVoiceSlots({ used: result.voices.length, limit: result.limit })).catch(() => undefined);
-    getApiHealth().then((health) => setFeatures(health.settings?.features || {})).catch(() => undefined);
+    getApiHealth().then((health) => {
+      setFeatures(health.settings?.features || {});
+      setWeights(health.settings?.pricing?.weights || null);
+    }).catch(() => undefined);
   }, [jobId]);
+
+  // Poll while short clips are being made.
+  useEffect(() => {
+    if (!job?.clips_pending) return;
+    const timer = setInterval(() => { getJob(jobId).then(setJob).catch(() => undefined); }, 4000);
+    return () => clearInterval(timer);
+  }, [job?.clips_pending, jobId]);
 
   // Poll while a YouTube upload is running.
   useEffect(() => {
@@ -71,7 +87,7 @@ export default function ResultPage() {
   const activeIndex = segments.findIndex((segment) => time >= segment.start && time < segment.end);
   const crumbs = [{ label: "Dashboard", href: "/dashboard" }, { label: "Projects", href: "/projects" }, { label: job ? projectFileName(job) : `Project #${params.id}` }];
 
-  if (errorMessage || !job || job.status !== "done") {
+  if (errorMessage || !job || (job.status !== "done" && !job.clips_pending)) {
     return (
       <AppShell crumbs={crumbs}>
         {errorMessage ? (
@@ -80,6 +96,8 @@ export default function ResultPage() {
           <section className="center-state"><span><LoaderCircle size={28} className="spin" /></span><h1>Loading your video…</h1></section>
         ) : job.status === "failed" ? (
           <section className="center-state is-error"><span><CircleAlert size={28} /></span><h1>This dub needs another take</h1><p>{job.error_message || "The translation could not be completed."}</p><Link className="btn btn-primary" href={`/jobs/${job.id}`}>Open project to retry <ArrowRight size={16} /></Link></section>
+        ) : job.review_state === "human_pending" ? (
+          <section className="center-state"><span><UserCheck size={28} /></span><h1>A native speaker is checking your translation</h1><p>Your reviewer corrects names, slang and tone before {job.options.mode === "subtitles" ? "your subtitles are made" : "the voice is generated"}. We&apos;ll email you when it&apos;s done, usually within a day.</p><Link href={`/jobs/${job.id}`} className="btn btn-primary">View project <ArrowRight size={16} /></Link></section>
         ) : (
           <section className="center-state"><span><AudioLines size={28} /></span><h1>This video is still in progress</h1><p>We&apos;re working through the translation now.</p><Link href={job.status === "awaiting_review" ? `/jobs/${job.id}/edit` : `/jobs/${job.id}`} className="btn btn-primary">{job.status === "awaiting_review" ? "Review translation" : "View processing status"} <ArrowRight size={16} /></Link></section>
         )}
@@ -95,7 +113,10 @@ export default function ResultPage() {
   const title = job.metadata?.title || projectTitle(job);
   const shareText = encodeURIComponent(`Watch "${title}" in ${target}, dubbed with ReelLingo`);
   const vtt = job.outputs.find((output) => output.format === "vtt");
-  const videoOutputs = job.outputs.filter((output) => output.kind !== "subtitles");
+  const subtitlesOnly = job.options.mode === "subtitles";
+  const videoOutputs = job.outputs.filter((output) => output.kind !== "subtitles" && output.kind !== "clip");
+  const clips = job.outputs.filter((output) => output.kind === "clip");
+  const dubbedAudio = job.outputs.find((output) => output.kind === "audio");
   const subtitleOutputs = job.outputs.filter((output) => output.kind === "subtitles");
   const redubsLeft = job.max_redubs - job.redub_count;
 
@@ -167,6 +188,44 @@ export default function ResultPage() {
     }
   }
 
+  async function makeClips() {
+    if (!window.confirm(`Make 3-5 short vertical clips with captions from this video? This uses ${formatMinutes(weights?.clips ?? 1)}.`)) return;
+    setBusy("clips");
+    try {
+      setJob(await requestClips(job!.id));
+      setNotice("Making your clips. This page updates when they're ready.");
+    } catch (error) {
+      setNotice(error instanceof ApiError && error.status === 402 ? `${error.message} Buy minutes or upgrade on the Billing page.` : error instanceof Error ? error.message : "Could not start the clips.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function loadYoutubeVideos() {
+    setYtLanguageError(null);
+    try {
+      const result = await getYoutubeVideos();
+      setYtVideos(result.videos);
+      if (result.videos[0]) setYtVideo(result.videos[0].id);
+    } catch (error) {
+      setYtLanguageError(error instanceof Error ? error.message : "Could not load your videos.");
+    }
+  }
+
+  async function addToExistingVideo() {
+    setBusy("yt-language");
+    setYtLanguageError(null);
+    try {
+      const result = await addLanguageToYoutube(job!.id, ytVideo);
+      setJob(await getJob(job!.id));
+      setNotice(`Added ${target} to “${result.title}”: ${[result.captions_id ? "subtitles" : "", result.localized ? "translated title and description" : ""].filter(Boolean).join(" and ") || "nothing new"}.`);
+    } catch (error) {
+      setYtLanguageError(error instanceof Error ? error.message : "Could not add this language.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function remove() {
     if (!window.confirm("Delete this project? Its video, audio and subtitle files are removed permanently.")) return;
     setBusy("delete");
@@ -184,18 +243,19 @@ export default function ResultPage() {
       <div className="page-head" style={{ alignItems: "flex-end" }}>
         <div>
           <div className="ready-line">
-            <span className="ready-chip"><CircleCheck size={13} />Translation Ready</span>
+            <span className="ready-chip"><CircleCheck size={13} />{subtitlesOnly ? "Subtitles Ready" : "Translation Ready"}</span>
+            {job.human_reviewed_at && <span className="ready-chip is-reviewed"><UserCheck size={13} />Checked by a native speaker</span>}
             <span>{job.duration_seconds ? `${clock(job.duration_seconds)} ${job.media_type === "audio" ? "audio" : "video"}` : "Dubbed video"} · Created {relativeTime(job.created_at).toLowerCase()}</span>
           </div>
           <h1 className="result-title">{title}</h1>
           <div className="lang-path">
             <span>{sourceLabel(job, languages)}</span><ChevronRight size={16} /><span className="to">{target}</span>
             <i className="sep" />
-            <span className="voice"><Volume2 size={16} />{job.options.voice_id ? "Saved voice" : job.voice_clone ? (job.speakers && job.speakers.length > 1 ? `${job.speakers.length} speaker clones` : "AI Voice Clone (Speaker Match)") : "AI Voice (Standard)"}</span>
+            <span className="voice">{subtitlesOnly ? <><FileText size={16} />Subtitles only</> : <><Volume2 size={16} />{job.options.voice_id ? "Saved voice" : job.voice_clone ? (job.speakers && job.speakers.length > 1 ? `${job.speakers.length} speaker clones` : "AI Voice Clone (Speaker Match)") : job.speakers?.some((speaker) => speaker.voice === "native") ? "Native Nigerian voice" : "AI Voice (Standard)"}</>}</span>
           </div>
         </div>
         <div className="page-head-actions">
-          <Link href={`/jobs/${job.id}/edit`} className="btn btn-outline" aria-disabled={redubsLeft <= 0 || job.files_expired}><PencilLine size={16} />Edit &amp; re-dub</Link>
+          <Link href={`/jobs/${job.id}/edit`} className="btn btn-outline" aria-disabled={redubsLeft <= 0 || job.files_expired}><PencilLine size={16} />{subtitlesOnly ? "Edit subtitles" : "Edit & re-dub"}</Link>
           <Link href="/dashboard#new-project" className="btn btn-outline"><RotateCcw size={16} />Translate Another</Link>
           <button type="button" className="btn btn-primary" onClick={shareVideo}><Share2 size={16} />Share Video</button>
         </div>
@@ -208,6 +268,8 @@ export default function ResultPage() {
         <div className="alert alert-info" style={{ marginBottom: 24 }}><Sparkles size={16} /><span>Free-plan exports carry a small ReelLingo watermark. <Link href="/billing" className="link">Upgrade</Link> to remove it and re-dub.</span></div>
       )}
       {notice && <div role="status" className="alert alert-success" style={{ marginBottom: 24 }}><CircleCheck size={16} /><span>{notice}</span></div>}
+      {job.review_note && <div className="alert alert-info" style={{ marginBottom: 24 }}><UserCheck size={16} /><span>{job.review_note}</span></div>}
+      {job.clips_pending && <div role="status" className="alert alert-info" style={{ marginBottom: 24 }}><LoaderCircle size={16} className="spin" /><span>Making your short clips… this usually takes a few minutes.</span></div>}
       {job.batch && job.batch.length > 1 && (
         <div className="batch-strip" aria-label="Other languages from this upload">
           <span>Also from this upload:</span>
@@ -221,8 +283,8 @@ export default function ResultPage() {
         <div className="result-main-col">
           <VideoPlayer
             ref={playerRef}
-            src={job.outputs.find((output) => output.kind === "lipsync")?.url || job.output_video_url}
-            label={`Dubbed · ${target}`}
+            src={job.outputs.find((output) => output.kind === "lipsync")?.url || job.output_video_url || (subtitlesOnly ? job.input_video_url : null)}
+            label={subtitlesOnly ? `Subtitles · ${target}` : `Dubbed · ${target}`}
             compareSrc={job.input_video_url}
             compareLabel={`Original · ${sourceLabel(job, languages)}`}
             captionsSrc={vtt?.url || null}
@@ -242,6 +304,35 @@ export default function ResultPage() {
                 <div><dt>Description</dt><dd>{job.metadata.description}</dd></div>
                 <div><dt><Hash size={14} />Hashtags</dt><dd className="hashtags">{job.metadata.hashtags.map((tag) => <span key={tag}>{tag}</span>)}</dd></div>
               </dl>
+            </section>
+          )}
+
+          {job.media_type !== "audio" && features.clips !== false && (
+            <section className="card card-pad clips-card" aria-labelledby="clips-title">
+              <div className="transcript-head" style={{ padding: 0, border: 0 }}>
+                <h2 id="clips-title"><Scissors size={18} />Short clips for TikTok, Reels &amp; Shorts</h2>
+                {!job.files_expired && (
+                  <button type="button" onClick={makeClips} disabled={busy === "clips" || job.clips_pending}>
+                    {job.clips_pending ? "Making clips…" : clips.length ? "Make new clips" : "Make clips"}
+                  </button>
+                )}
+              </div>
+              {clips.length ? (
+                <div className="clip-grid">
+                  {clips.map((clip) => (
+                    <figure key={clip.label} className="clip-tile">
+                      {clip.url && <video src={clip.url} controls preload="metadata" playsInline />}
+                      <figcaption>
+                        <strong>{clip.label.replace(/^Clip \d+: /, "")}</strong>
+                        <small>{clip.start !== null && clip.start !== undefined ? `${clock(clip.start)}–${clock(clip.end || 0)}` : ""}</small>
+                        {clip.download_url && <a href={clip.download_url} download className="link"><Download size={13} /> Download</a>}
+                      </figcaption>
+                    </figure>
+                  ))}
+                </div>
+              ) : (
+                <p className="card-sub">We pick the 3-5 strongest moments, make them vertical and add big captions, ready to post. Uses {formatMinutes(weights?.clips ?? 1)} per set.</p>
+              )}
             </section>
           )}
 
@@ -347,7 +438,45 @@ export default function ResultPage() {
             </section>
           )}
 
-          {features.saved_voices !== false && <section className="tip-card">
+          {job.media_type !== "audio" && features.youtube_languages !== false && youtube?.configured && (
+            <section className="card card-pad" aria-labelledby="yt-language-title">
+              <h2 id="yt-language-title" style={{ display: "flex", gap: 8, alignItems: "center" }}><Clapperboard size={19} />Add {target} to a video already on YouTube</h2>
+              <p className="card-sub" style={{ marginTop: 6 }}>Keep all your views on one video: we add {target} subtitles and a translated title and description to your original upload.</p>
+              {!youtube.connected ? (
+                <p className="card-sub" style={{ marginTop: 8 }}><Link href="/settings#integrations" className="link">Connect your channel</Link> first.</p>
+              ) : ytVideos === null ? (
+                <button type="button" className="btn btn-outline btn-sm" style={{ marginTop: 12 }} onClick={loadYoutubeVideos}><Youtube size={15} />Choose a video</button>
+              ) : (
+                <div className="form-stack" style={{ marginTop: 12, gap: 10 }}>
+                  <div className="select-wrap">
+                    <select className="select" aria-label="Your YouTube video" value={ytVideo} onChange={(event) => setYtVideo(event.target.value)}>
+                      {ytVideos.map((video) => <option key={video.id} value={video.id}>{video.title}</option>)}
+                    </select>
+                  </div>
+                  <button type="button" className="btn btn-primary btn-sm" disabled={!ytVideo || busy === "yt-language"} onClick={addToExistingVideo}>{busy === "yt-language" ? "Adding…" : `Add ${target} subtitles & title`}</button>
+                </div>
+              )}
+              {ytLanguageError && <p className="form-error">{ytLanguageError}</p>}
+              {job.youtube_languages.length > 0 && (
+                <ul className="simple-list" style={{ marginTop: 10 }}>
+                  {job.youtube_languages.map((item) => <li key={item.video_id}><span><CircleCheck size={14} color="var(--teal)" /> Added to <a className="link" href={`https://youtu.be/${item.video_id}`} target="_blank" rel="noreferrer">{item.title}</a></span></li>)}
+                </ul>
+              )}
+              {!subtitlesOnly && dubbedAudio?.download_url && (
+                <details className="yt-audio-howto">
+                  <summary>Add the dubbed voice as an audio track too</summary>
+                  <ol>
+                    <li><a className="link" href={dubbedAudio.download_url} download>Download the dubbed audio (MP3)</a>.</li>
+                    <li>Open YouTube Studio → <b>Languages</b> → your video → <b>Add language</b> → {target}.</li>
+                    <li>Under <b>Dub</b>, choose <b>Add</b> and upload the MP3. YouTube lets viewers switch to it from the settings menu.</li>
+                  </ol>
+                  <small>YouTube only accepts audio tracks through YouTube Studio, and the feature may not be on every channel yet.</small>
+                </details>
+              )}
+            </section>
+          )}
+
+          {!subtitlesOnly && features.saved_voices !== false && <section className="tip-card">
             <span><Mic size={15} />SAVE THIS VOICE</span>
             {voiceSlots && voiceSlots.limit > 0 ? (
               <>

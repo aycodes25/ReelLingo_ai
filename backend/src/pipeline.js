@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
-import { consumeCredit, findCredit, listGlossary, planFor, rewardReferralIfDue } from "./accounts.js";
+import { listGlossary, planFor } from "./accounts.js";
+import { pickHighlights, renderClip } from "./clips.js";
 import { config } from "./config.js";
 import { runWithJob } from "./costs.js";
 import { getJob, updateJob } from "./database.js";
@@ -13,10 +14,12 @@ import { getLanguage } from "./languages.js";
 import { lipSync } from "./lipsync.js";
 import { logger } from "./logger.js";
 import { getMediaInfo, run } from "./media.js";
+import { ensureCharged, jobMinutes, lineHash, newCharge, NotEnoughMinutes, perMinuteWeight, refundRun, secondsAffordable } from "./minutes.js";
 import { notifyJob } from "./notify.js";
 import {
   assertAudibleAudio, displaySize, exportAudioOnly, generateSrt, generateVtt, mergeAudioVideo, writeAss, ASPECTS, aspectSize, encodeAudio,
 } from "./render.js";
+import { openReviewTask } from "./reviews.js";
 import { mixDubWithBackground, separateBackground } from "./separation.js";
 import { deleteFiles, downloadFile, fileExists, getSignedUrl, uploadBuffer, uploadFile } from "./storage.js";
 import { transcribe } from "./transcription.js";
@@ -47,15 +50,38 @@ async function probeInput(path) {
   return { info, durationSeconds, hasVideo };
 }
 
-/** Checks an imported file against the plan the same way an upload is checked, using a credit or trimming if allowed. */
-async function enforceImportLimits(job, durationSeconds) {
+/**
+ * Charges an imported video once its length is known (the same rules as an upload): the plan's longest video,
+ * then the account's minutes. With "trim to fit" it keeps only what the plan and minutes allow.
+ */
+async function chargeImport(job, durationSeconds) {
   const plan = await planFor({ userId: job.user_id, teamId: job.team_id });
-  const minutes = durationSeconds / 60;
-  if (minutes <= plan.maxVideoMinutes) return {};
-  if (job.options_json.trim_to_fit) return { trimSeconds: plan.maxVideoMinutes * 60, note: `Trimmed to the first ${plan.maxVideoMinutes} minutes to fit your plan.` };
-  const credit = await findCredit(plan.billingId, Math.ceil(minutes));
-  if (credit && await consumeCredit(credit.id, job.id)) return { creditId: credit.id };
-  throw new Error(`This video is ${Math.ceil(minutes)} minutes long. Your plan allows ${plan.maxVideoMinutes} minutes. Retry with “trim to fit”, buy a longer pay-as-you-go credit, or upgrade.`);
+  const options = job.options_json;
+  const weights = { mode: options.mode || "dub", lipSync: Boolean(options.lip_sync), humanReview: Boolean(options.human_review) };
+  let seconds = durationSeconds;
+  let trimSeconds = null;
+  const notes = [];
+  if (seconds / 60 > plan.maxVideoMinutes) {
+    if (!options.trim_to_fit) {
+      throw new Error(`This video is ${Math.ceil(seconds / 60)} minutes long. Your plan allows ${plan.maxVideoMinutes} minutes. Retry with “trim to fit”, or upgrade.`);
+    }
+    trimSeconds = plan.maxVideoMinutes * 60;
+    seconds = trimSeconds;
+    notes.push(`Trimmed to the first ${plan.maxVideoMinutes} minutes to fit your plan.`);
+  }
+  let minutes = jobMinutes({ durationSeconds: seconds, ...weights });
+  if (minutes > plan.minutes.available && options.trim_to_fit) {
+    const affordable = secondsAffordable(plan.minutes.available, perMinuteWeight(weights));
+    if (affordable >= 10 && affordable < seconds) {
+      trimSeconds = affordable;
+      minutes = jobMinutes({ durationSeconds: affordable, ...weights });
+      notes.push(`Trimmed to the first ${Math.floor(affordable / 60)}:${String(affordable % 60).padStart(2, "0")} to fit the minutes you have left.`);
+    }
+  }
+  const nextOptions = { ...options, charge: newCharge(minutes, "job"), charge_on_import: false, ...(trimSeconds ? { trim_seconds: trimSeconds } : {}) };
+  Object.assign(job, await updateJob(job.id, { options_json: nextOptions }));
+  await ensureCharged(job, { billingId: plan.billingId, allowance: plan.plan.minutes_per_month, periodEnd: plan.periodEnd });
+  return { notes };
 }
 
 async function acquireInput(job, workdir, step) {
@@ -65,18 +91,15 @@ async function acquireInput(job, workdir, step) {
     await mkdir(importDirectory, { recursive: true });
     const imported = await importFromUrl(job.source_url, importDirectory);
     const { durationSeconds, hasVideo } = await probeInput(imported.path);
-    const limits = await enforceImportLimits(job, durationSeconds);
+    const charged = job.options_json.charge_on_import ? await chargeImport(job, durationSeconds) : { notes: [] };
     const storagePath = `uploads/${randomUUID()}${extensionFor(imported.mimetype, imported.filename)}`;
     await uploadFile(storagePath, imported.path, imported.mimetype);
-    const options = limits.trimSeconds ? { ...job.options_json, trim_seconds: limits.trimSeconds } : job.options_json;
     Object.assign(job, await updateJob(job.id, {
       input_storage_path: storagePath,
       original_filename: job.original_filename || imported.filename,
       media_type: hasVideo ? "video" : "audio",
-      options_json: options,
-      ...(limits.creditId ? { credit_id: limits.creditId } : {}),
     }));
-    return { path: imported.path, notes: limits.note ? [limits.note] : [] };
+    return { path: imported.path, notes: charged.notes };
   }
   if (!job.input_storage_path) throw new Error("This project has no source video.");
   if (job.files_expired_at) throw new Error("The original upload has been deleted under the retention policy. Upload the video again.");
@@ -155,6 +178,8 @@ export async function processJob(job, { localInputPath = null } = {}) {
       throw new Error("Live dubbing is not configured. Set OPENAI_API_KEY in backend/.env; demo placeholders are never exported as a finished dub.");
     }
     const options = job.options_json || {};
+    if (options.task === "clips") return await makeClips(job, workdir);
+    const subtitlesOnly = options.mode === "subtitles";
 
     let inputPath;
     if (localInputPath) {
@@ -218,10 +243,19 @@ export async function processJob(job, { localInputPath = null } = {}) {
       }
     }
 
+    // Human review by a native speaker comes first, then the creator's own review (if they asked for either).
+    if (options.human_review && !["human_done", "approved", "pending"].includes(job.review_state)) {
+      Object.assign(job, await getJob(job.id));
+      await openReviewTask(job);
+      await updateJob(job.id, { status: "awaiting_review", current_step: "human_review", review_state: "human_pending", heartbeat_at: null });
+      throw new PausedForReview("human");
+    }
     if (options.review && job.review_state !== "approved") {
       await updateJob(job.id, { status: "awaiting_review", current_step: "review", review_state: "pending", heartbeat_at: null });
       throw new PausedForReview();
     }
+
+    if (subtitlesOnly) return await finishSubtitles(job, { inputPath, info, isAudioOnly, translated, transcript, notes, workdir });
 
     let background = null;
     if (options.keep_background !== false) {
@@ -246,6 +280,7 @@ export async function processJob(job, { localInputPath = null } = {}) {
       workdir,
       clipCache,
       voiceScope: `job${job.id}`,
+      preferredVoice: options.nigerian_voice || null,
     });
     for (const clip of dubResult.newClips) await uploadFile(`jobs/${job.id}/clips/${clip.key}.mp3`, clip.path, "audio/mpeg");
     const currentKeys = [...new Set(dubResult.keys.map((item) => item.key))];
@@ -330,37 +365,154 @@ export async function processJob(job, { localInputPath = null } = {}) {
 
     const previous = await getJob(job.id);
     const oldPaths = (previous?.outputs_json || []).map((output) => output.path).filter((path) => !outputs.some((output) => output.path === path));
+    // Clips made from an earlier version of the dub are kept until new ones are made.
+    const keptClips = (previous?.outputs_json || []).filter((output) => output.kind === "clip");
     await updateJob(job.id, {
       output_video_path: mainPath,
       output_srt_path: srtPath,
-      outputs_json: outputs,
+      outputs_json: [...outputs, ...keptClips],
       processing_note: notes.length ? notes.join(" ") : null,
+      options_json: { ...(await getJob(job.id)).options_json, dubbed_hashes: translated.map((segment) => lineHash(segment.text)) },
       status: "done",
       current_step: "done",
       completed_at: new Date().toISOString(),
       heartbeat_at: null,
     });
-    if (oldPaths.length) await deleteFiles(oldPaths).catch(() => undefined);
+    if (oldPaths.length) await deleteFiles(oldPaths.filter((path) => !keptClips.some((clip) => clip.path === path))).catch(() => undefined);
     const finished = await getJob(job.id);
     await notifyJob(finished, "done");
-    await rewardReferralIfDue(job.user_id).catch((error) => logger.warn({ err: error }, "Referral reward failed"));
     return finished;
   } catch (error) {
     if (error instanceof PausedForReview) {
-      await notifyJob(await getJob(job.id), "review");
+      // Human reviews wait for a reviewer, so the creator isn't asked to do anything yet.
+      if (error.message !== "human") await notifyJob(await getJob(job.id), "review");
       return getJob(job.id);
     }
-    logger.error({ err: error, jobId: job.id }, "Job failed");
-    const failed = await updateJob(job.id, {
-      status: "failed",
-      error_message: error instanceof Error ? error.message : String(error),
-      processing_note: notes.length ? notes.join(" ") : null,
-      heartbeat_at: null,
-    });
-    await notifyJob(failed, "failed");
-    return failed;
+    return failJob(job, error, notes);
   } finally {
     await rm(workdir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * A failed run gives its minutes back. Short clips are an extra on a finished project, so if they fail the
+ * project stays finished and only the clips' minutes are refunded.
+ */
+async function failJob(job, error, notes = []) {
+  const message = error instanceof Error ? error.message : String(error);
+  logger.error({ err: error, jobId: job.id }, "Job failed");
+  const latest = (await getJob(job.id)) || job;
+  const refunded = await refundRun(latest).catch((refundError) => {
+    logger.error({ err: refundError, jobId: job.id }, "Refund after failure failed");
+    return 0;
+  });
+  const refundNote = refunded ? ` The ${refunded} minute${refunded === 1 ? " was" : "s were"} returned to your balance.` : "";
+  if (latest.options_json?.task === "clips") {
+    const { task, ...options } = latest.options_json;
+    return updateJob(job.id, {
+      status: "done", current_step: "done", heartbeat_at: null, options_json: options,
+      processing_note: `Short clips could not be made: ${message}${refundNote}`,
+    });
+  }
+  const failed = await updateJob(job.id, {
+    status: "failed",
+    error_message: error instanceof NotEnoughMinutes ? message : `${message}${refundNote}`,
+    processing_note: notes.length ? notes.join(" ") : null,
+    heartbeat_at: null,
+  });
+  await notifyJob(failed, "failed");
+  return failed;
+}
+
+/** Subtitles-only projects: translated subtitle files, plus a captioned copy of the original video if requested. */
+async function finishSubtitles(job, { inputPath, info, isAudioOnly, translated, transcript, notes, workdir }) {
+  const options = job.options_json || {};
+  const prefix = `jobs/${job.id}`;
+  const version = Date.now().toString(36);
+  const outputs = [];
+  await updateJob(job.id, { status: "processing", current_step: "generating_subtitles" });
+  const srtPath = await uploadBuffer(`${prefix}/subtitles.srt`, Buffer.from(generateSrt(translated)), "text/plain; charset=utf-8");
+  outputs.push({ kind: "subtitles", format: "srt", label: `Subtitles in ${getLanguage(job.target_language)?.name || job.target_language} (SRT)`, path: srtPath });
+  outputs.push({ kind: "subtitles", format: "vtt", label: "Subtitles (VTT)", path: await uploadBuffer(`${prefix}/subtitles.vtt`, Buffer.from(generateVtt(translated)), "text/vtt; charset=utf-8") });
+  outputs.push({ kind: "subtitles", format: "srt-original", label: "Original-language subtitles (SRT)", path: await uploadBuffer(`${prefix}/subtitles-original.srt`, Buffer.from(generateSrt(transcript)), "text/plain; charset=utf-8") });
+
+  let mainPath = null;
+  if (!isAudioOnly && (options.captions || options.formats?.length)) {
+    await updateJob(job.id, { status: "processing", current_step: "rendering" });
+    const size = displaySize(info);
+    const watermark = Boolean(options.watermark);
+    const style = options.captions || "classic";
+    const assPath = await writeAss(join(workdir, "captions.ass"), translated, { ...size, style });
+    outputs.push({ kind: "subtitles", format: "ass", label: "Styled subtitles (ASS)", path: await uploadFile(`${prefix}/subtitles.ass`, assPath, "text/plain; charset=utf-8") });
+    const captioned = join(workdir, "captioned.mp4");
+    // The original audio is kept: only captions (and the watermark on free plans) are added.
+    await mergeAudioVideo(inputPath, inputPath, captioned, { watermark, assPath });
+    mainPath = await uploadFile(`${prefix}/captioned-${version}.mp4`, captioned, "video/mp4");
+    outputs.push({ kind: "captioned", label: "Video with burned-in subtitles", path: mainPath });
+    for (const aspect of options.formats || []) {
+      if (!ASPECTS[aspect]) continue;
+      const target = aspectSize(size, aspect);
+      const slug = aspect.replace(":", "x");
+      const variantAss = await writeAss(join(workdir, `captions-${slug}.ass`), translated, { ...target, style });
+      const variant = join(workdir, `format-${slug}.mp4`);
+      await mergeAudioVideo(inputPath, inputPath, variant, { watermark, assPath: variantAss, aspect });
+      outputs.push({ kind: "format", aspect, label: ASPECTS[aspect].label, path: await uploadFile(`${prefix}/format-${slug}-${version}.mp4`, variant, "video/mp4") });
+    }
+  }
+  await updateJob(job.id, {
+    output_video_path: mainPath,
+    output_srt_path: srtPath,
+    outputs_json: outputs,
+    processing_note: notes.length ? notes.join(" ") : null,
+    status: "done",
+    current_step: "done",
+    completed_at: new Date().toISOString(),
+    heartbeat_at: null,
+  });
+  const finished = await getJob(job.id);
+  await notifyJob(finished, "done");
+  return finished;
+}
+
+/** Short clips: 3-5 vertical, captioned highlights cut from the finished dub. */
+async function makeClips(job, workdir) {
+  const step = (current_step) => updateJob(job.id, { status: "processing", current_step, error_message: null });
+  try {
+    const outputs = job.outputs_json || [];
+    const source = outputs.find((output) => output.kind === "lipsync") || outputs.find((output) => output.kind === "video") || outputs.find((output) => output.kind === "captioned");
+    if (!source) throw new Error("There's no finished video to cut clips from.");
+    const segments = job.translated_segments_json || [];
+    await step("choosing_clips");
+    const highlights = await pickHighlights(segments, { language: job.target_language, durationSeconds: Number(job.duration_seconds) || 0 });
+    if (!highlights.length) throw new Error("No part of this video was long enough to make a clip.");
+    const videoPath = await downloadFile(source.path, join(workdir, "dub.mp4"));
+    await step("rendering_clips");
+    const prefix = `jobs/${job.id}/clips-out`;
+    const version = Date.now().toString(36);
+    const clips = [];
+    for (const [index, highlight] of highlights.entries()) {
+      const rendered = await renderClip(videoPath, segments, {
+        start: highlight.start, end: highlight.end, workdir, index,
+        style: job.options_json.captions || "bold", watermark: Boolean(job.options_json.watermark),
+      });
+      clips.push({
+        kind: "clip", label: `Clip ${index + 1}: ${highlight.title}`, start: highlight.start, end: highlight.end,
+        path: await uploadFile(`${prefix}/clip-${index + 1}-${version}.mp4`, rendered, "video/mp4"),
+      });
+    }
+    const latest = await getJob(job.id);
+    const oldClips = (latest.outputs_json || []).filter((output) => output.kind === "clip");
+    const { task, ...options } = latest.options_json;
+    await updateJob(job.id, {
+      outputs_json: [...(latest.outputs_json || []).filter((output) => output.kind !== "clip"), ...clips],
+      options_json: options,
+      status: "done", current_step: "done", heartbeat_at: null,
+      processing_note: `${clips.length} short clip${clips.length === 1 ? "" : "s"} ready.`,
+    });
+    if (oldClips.length) await deleteFiles(oldClips.map((clip) => clip.path)).catch(() => undefined);
+    return getJob(job.id);
+  } catch (error) {
+    return failJob(job, error);
   }
 }
 

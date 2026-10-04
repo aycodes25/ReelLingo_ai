@@ -1,9 +1,10 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { grantCredit } from "./accounts.js";
+import { rewardReferralIfDue } from "./accounts.js";
 import { config } from "./config.js";
 import { many, one, query } from "./db.js";
 import { logger } from "./logger.js";
-import { getCreditPack, getPlan } from "./plans.js";
+import { grantMinutes } from "./minutes.js";
+import { getPack, getPlan } from "./plans.js";
 
 export function billingProviders() {
   return { paystack: Boolean(config.paystackSecretKey), stripe: Boolean(config.stripeSecretKey) };
@@ -47,40 +48,53 @@ function toIso(value) {
   return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text) ? `${text.replace(" ", "T")}Z` : text;
 }
 
-function addMonth(date = new Date()) {
-  const next = new Date(date);
-  next.setUTCMonth(next.getUTCMonth() + 1);
+/** End of a paid period: one month, or twelve for yearly plans. */
+export function periodAfter(cycle, from = new Date()) {
+  const next = new Date(from);
+  next.setUTCMonth(next.getUTCMonth() + (cycle === "yearly" ? 12 : 1));
   return next;
 }
 
-async function recordPayment({ userId, billingId, provider, reference, kind, planCode = null, pack = null, amount, currency }) {
+/** A renewal extends from the current end date (so paying a day early never loses a day), or from now if it lapsed. */
+function renewalEnd(subscription) {
+  const currentEnd = subscription.current_period_end ? new Date(subscription.current_period_end) : null;
+  const from = currentEnd && currentEnd > new Date() ? currentEnd : new Date();
+  return periodAfter(subscription.billing_cycle === "yearly" ? "yearly" : "monthly", from);
+}
+
+async function recordPayment({ userId, billingId, provider, reference, kind, planCode = null, pack = null, amount, currency, cycle = null }) {
   await query(
-    `INSERT INTO payments (user_id, billing_id, provider, reference, kind, plan_code, credit_pack, amount, currency, status, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', CURRENT_TIMESTAMP)`,
-    [userId, billingId, provider, reference, kind, planCode, pack, amount, currency],
+    `INSERT INTO payments (user_id, billing_id, provider, reference, kind, plan_code, credit_pack, amount, currency, status, billing_cycle, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, CURRENT_TIMESTAMP)`,
+    [userId, billingId, provider, reference, kind, planCode, pack, amount, currency, cycle],
   );
 }
 
 /** Starts a checkout for a plan subscription or a pay-as-you-go pack and returns the hosted payment page URL. */
-export async function createCheckout({ provider, user, billingId, planCode = null, packCode = null, autoRenew = true }) {
+export async function createCheckout({ provider, user, billingId, planCode = null, packCode = null, autoRenew = true, cycle = "monthly" }) {
   const providers = billingProviders();
   if (!providers[provider]) throw new Error(`${provider === "stripe" ? "Stripe" : "Paystack"} payments aren't configured on this server.`);
-  const pack = packCode ? getCreditPack(packCode) : null;
+  const pack = packCode ? await getPack(packCode) : null;
+  if (packCode && !pack) throw new Error("That minute pack no longer exists. Refresh the page and choose another.");
   const plan = planCode ? await getPlan(planCode) : null;
-  if (!pack && (!plan || plan.code !== planCode || plan.price_usd <= 0)) throw new Error("Choose a paid plan or a pay-as-you-go pack.");
-  if (pack && !config.featurePayg) throw new Error("Pay-as-you-go credits are currently unavailable.");
+  if (!pack && (!plan || plan.code !== planCode || plan.price_usd <= 0)) throw new Error("Choose a paid plan or a minute pack.");
+  if (pack && !config.featurePayg) throw new Error("Minute packs are currently unavailable.");
   if (plan && (plan.contact_sales || !plan.public)) throw new Error(`The ${plan.name} plan is arranged directly with our team. Contact ${config.supportEmail}.`);
+  const yearly = !pack && cycle === "yearly";
+  if (yearly && (!config.featureYearly || !plan.price_usd_yearly || !plan.price_ngn_yearly)) throw new Error(`The ${plan.name} plan isn't available yearly.`);
+  const billingCycle = pack ? null : yearly ? "yearly" : "monthly";
   const kind = pack ? "payg" : "subscription";
   const reference = `rl_${randomUUID().replace(/-/g, "").slice(0, 20)}`;
   const callback = `${config.frontendUrl}/billing/callback?provider=${provider}`;
-  const metadata = { billing_id: billingId, user_id: user.id, kind, plan_code: plan?.code || "", pack: pack?.code || "", reference };
+  const metadata = { billing_id: billingId, user_id: user.id, kind, plan_code: plan?.code || "", pack: pack?.code || "", cycle: billingCycle || "", reference };
+  const planKey = plan ? `${plan.code}${yearly ? "_yearly" : ""}` : "";
 
   if (provider === "paystack") {
-    const amount = (pack ? pack.price_ngn : plan.price_ngn) * 100;
+    const amount = Math.round((pack ? pack.price_ngn : yearly ? plan.price_ngn_yearly : plan.price_ngn) * 100);
     // A Paystack plan makes the payment renew automatically, but Paystack then only accepts cards.
-    // Without it the customer can also pay by bank transfer, USSD or bank, and pays again next month.
-    const planCodeOnPaystack = !pack && autoRenew ? config.paystackPlanCodes[plan.code] : "";
-    await recordPayment({ userId: user.id, billingId, provider, reference, kind, planCode: plan?.code, pack: pack?.code, amount, currency: "NGN" });
+    // Without it the customer can also pay by bank transfer, USSD or bank, and pays again when the period ends.
+    const planCodeOnPaystack = !pack && autoRenew ? config.paystackPlanCodes[planKey] || "" : "";
+    await recordPayment({ userId: user.id, billingId, provider, reference, kind, planCode: plan?.code, pack: pack?.code, amount, currency: "NGN", cycle: billingCycle });
     const data = await paystack("/transaction/initialize", {
       method: "POST",
       body: {
@@ -91,9 +105,9 @@ export async function createCheckout({ provider, user, billingId, planCode = nul
     return { url: data.authorization_url, reference };
   }
 
-  const amount = Math.round((pack ? pack.price_usd : plan.price_usd) * 100);
-  await recordPayment({ userId: user.id, billingId, provider, reference, kind, planCode: plan?.code, pack: pack?.code, amount, currency: "USD" });
-  const priceId = !pack ? config.stripePriceIds[plan.code] : "";
+  const amount = Math.round((pack ? pack.price_usd : yearly ? plan.price_usd_yearly : plan.price_usd) * 100);
+  await recordPayment({ userId: user.id, billingId, provider, reference, kind, planCode: plan?.code, pack: pack?.code, amount, currency: "USD", cycle: billingCycle });
+  const priceId = !pack ? config.stripePriceIds[planKey] || "" : "";
   const lineItem = priceId
     ? { price: priceId, quantity: 1 }
     : {
@@ -101,8 +115,8 @@ export async function createCheckout({ provider, user, billingId, planCode = nul
       price_data: {
         currency: "usd",
         unit_amount: amount,
-        product_data: { name: pack ? `ReelLingo ${pack.minutes}-minute video credit` : `ReelLingo ${plan.name} plan` },
-        ...(pack ? {} : { recurring: { interval: "month" } }),
+        product_data: { name: pack ? `ReelLingo ${pack.minutes} minutes` : `ReelLingo ${plan.name} plan (${billingCycle})` },
+        ...(pack ? {} : { recurring: { interval: yearly ? "year" : "month" } }),
       },
     };
   const session = await stripe("/checkout/sessions", {
@@ -122,7 +136,7 @@ export async function createCheckout({ provider, user, billingId, planCode = nul
   return { url: session.url, reference };
 }
 
-/** Activates a plan or grants a credit for a successful payment. Safe to call repeatedly (callback + webhook). */
+/** Activates a plan or adds minutes for a successful payment. Safe to call repeatedly (callback + webhook). */
 async function fulfill(reference, { providerRef = null, customer = null, periodEnd = null, raw = null } = {}) {
   const payment = await one("SELECT * FROM payments WHERE reference = $1", [reference]);
   if (!payment) throw new Error("Unknown payment reference.");
@@ -130,10 +144,11 @@ async function fulfill(reference, { providerRef = null, customer = null, periodE
   if (!claimed.rowCount) return { alreadyProcessed: true, payment };
   try {
     if (payment.kind === "payg") {
-      const pack = getCreditPack(payment.credit_pack);
-      await grantCredit(payment.billing_id, pack.minutes, "payg", reference);
+      const pack = await getPack(payment.credit_pack);
+      if (!pack) throw new Error(`Unknown minute pack ${payment.credit_pack}.`);
+      await grantMinutes(payment.billing_id, pack.minutes, "pack", { reference, note: `Bought ${pack.minutes} minutes` });
     } else {
-      await activateSubscription(payment.billing_id, payment.plan_code, { provider: payment.provider, providerRef, customer, periodEnd });
+      await activateSubscription(payment.billing_id, payment.plan_code, { provider: payment.provider, providerRef, customer, periodEnd, cycle: payment.billing_cycle || "monthly" });
     }
   } catch (error) {
     // Put the payment back so the callback page or the next webhook can try again.
@@ -141,19 +156,21 @@ async function fulfill(reference, { providerRef = null, customer = null, periodE
     throw error;
   }
   logger.info({ reference, kind: payment.kind, billingId: payment.billing_id }, "Payment fulfilled");
+  await rewardReferralIfDue(payment.user_id, payment).catch((error) => logger.warn({ err: error }, "Referral reward failed"));
   return { alreadyProcessed: false, payment };
 }
 
-export async function activateSubscription(billingId, planCode, { provider = "manual", providerRef = null, customer = null, periodEnd = null } = {}) {
+export async function activateSubscription(billingId, planCode, { provider = "manual", providerRef = null, customer = null, periodEnd = null, cycle = "monthly" } = {}) {
   const plan = await getPlan(planCode);
-  const end = (periodEnd || addMonth()).toISOString();
+  const billingCycle = cycle === "yearly" ? "yearly" : "monthly";
+  const end = (periodEnd || periodAfter(billingCycle)).toISOString();
   await query(
-    `INSERT INTO subscriptions (user_id, tier, status, provider, provider_ref, provider_customer, current_period_end, cancel_at_period_end, max_videos_per_month, max_video_minutes, videos_used_this_month, updated_at)
-     VALUES ($1, $2, 'active', $3, $4, $5, $6, $7, $8, $9, 0, CURRENT_TIMESTAMP)
+    `INSERT INTO subscriptions (user_id, tier, status, provider, provider_ref, provider_customer, current_period_end, cancel_at_period_end, max_videos_per_month, max_video_minutes, videos_used_this_month, billing_cycle, updated_at)
+     VALUES ($1, $2, 'active', $3, $4, $5, $6, $7, $8, $9, 0, $10, CURRENT_TIMESTAMP)
      ON CONFLICT (user_id) DO UPDATE SET tier = $2, status = 'active', provider = $3, provider_ref = COALESCE($4, subscriptions.provider_ref),
        provider_customer = COALESCE($5, subscriptions.provider_customer), current_period_end = $6, cancel_at_period_end = $7,
-       max_videos_per_month = $8, max_video_minutes = $9, updated_at = CURRENT_TIMESTAMP`,
-    [billingId, plan.code, provider, providerRef, customer, end, false, plan.videos_per_month, plan.max_video_minutes],
+       max_videos_per_month = $8, max_video_minutes = $9, billing_cycle = $10, updated_at = CURRENT_TIMESTAMP`,
+    [billingId, plan.code, provider, providerRef, customer, end, false, plan.videos_per_month, plan.max_video_minutes, billingCycle],
   );
 }
 
@@ -213,7 +230,7 @@ export async function handlePaystackEvent(event) {
       // A renewal charge from an existing Paystack subscription: extend the paid period.
       const subscription = await subscriptionByProvider("customer", data.customer?.customer_code);
       if (subscription) {
-        await query("UPDATE subscriptions SET status = 'active', current_period_end = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [addMonth().toISOString(), subscription.id]);
+        await query("UPDATE subscriptions SET status = 'active', current_period_end = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [renewalEnd(subscription).toISOString(), subscription.id]);
         await recordPayment({ userId: subscription.user_id, billingId: subscription.user_id, provider: "paystack", reference: `renewal_${data.reference || data.id}`, kind: "renewal", planCode: subscription.tier, amount: Number(data.amount || 0), currency: data.currency || "NGN" }).catch(() => undefined);
         await query("UPDATE payments SET status = 'success' WHERE reference = $1", [`renewal_${data.reference || data.id}`]);
       }

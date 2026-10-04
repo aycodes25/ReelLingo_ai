@@ -6,6 +6,9 @@ import test from "node:test";
 
 const dataDirectory = await mkdtemp(join(tmpdir(), "reellingo-admin-"));
 Object.assign(process.env, {
+  // API keys and teams are hidden by default; these tests use them.
+  FEATURE_API: "true",
+  FEATURE_TEAMS: "true",
   MOCK_MODE: "false",
   OPENAI_API_KEY: "test-openai",
   ELEVENLABS_API_KEY: "test-elevenlabs",
@@ -54,7 +57,7 @@ test("admins control settings, plans and user accounts", async (context) => {
   const settings = await call("/admin/settings", admin).then((response) => response.json());
   assert.ok(settings.some((setting) => setting.key === "feature_link_import" && setting.value === true));
   await call("/admin/settings", admin, "PUT", { feature_link_import: false, announcement: "New voices this week!" });
-  const blocked = await call("/jobs", creator, "POST", { source_url: "https://www.youtube.com/watch?v=x", source_language: "yo", target_languages: "en" });
+  const blocked = await call("/jobs", creator, "POST", { source_url: "https://example.com/video.mp4", source_language: "yo", target_languages: "en", rights_confirmed: true, voice_consent: true });
   assert.equal(blocked.status, 403);
   assert.equal((await blocked.json()).code, "feature_disabled");
   const health = await fetch(`${base}/health`).then((response) => response.json());
@@ -66,11 +69,11 @@ test("admins control settings, plans and user accounts", async (context) => {
 
   // Maintenance mode blocks creators but not admins.
   await call("/admin/settings", admin, "PUT", { maintenance_mode: true });
-  const paused = await call("/jobs", creator, "POST", { source_url: "https://www.youtube.com/watch?v=x", source_language: "yo", target_languages: "en" });
+  const paused = await call("/jobs", creator, "POST", { source_url: "https://example.com/video.mp4", source_language: "yo", target_languages: "en", rights_confirmed: true, voice_consent: true });
   assert.equal(paused.status, 503);
   assert.equal((await paused.json()).code, "maintenance");
-  const adminDuringMaintenance = await call("/jobs", admin, "POST", { source_url: "https://www.youtube.com/watch?v=x", source_language: "yo", target_languages: "en" });
-  assert.equal(adminDuringMaintenance.status, 201, "admins can still create jobs");
+  const adminDuringMaintenance = await call("/jobs", admin, "POST", { source_url: "https://example.com/video.mp4", source_language: "yo", target_languages: "en", rights_confirmed: true, voice_consent: true });
+  assert.equal(adminDuringMaintenance.status, 201, await adminDuringMaintenance.clone().text());
   await call("/admin/settings", admin, "PUT", { maintenance_mode: false });
 
   // Sign-ups can be closed.
@@ -81,13 +84,13 @@ test("admins control settings, plans and user accounts", async (context) => {
 
   // Plans: edit what a plan includes; the change is enforced on the next upload.
   const plans = await call("/admin/plans", admin).then((response) => response.json());
-  assert.deepEqual(plans.plans.map((plan) => plan.code), ["free", "starter", "creator", "studio"]);
+  assert.deepEqual(plans.plans.map((plan) => plan.code), ["free", "subtitles", "starter", "creator", "studio", "ministry", "agency"]);
   assert.equal(plans.plans.find((plan) => plan.code === "studio").subscribers, 2);
   const studio = plans.plans.find((plan) => plan.code === "studio");
   const edited = await call("/admin/plans/studio", admin, "PUT", { ...studio, price_ngn: 150000, permissions: { ...studio.permissions, link_import: false } }).then((response) => response.json());
   assert.equal(edited.price_ngn, 150000);
   assert.equal(edited.permissions.link_import, false);
-  const notInPlan = await call("/jobs", creator, "POST", { source_url: "https://www.youtube.com/watch?v=x", source_language: "yo", target_languages: "en" });
+  const notInPlan = await call("/jobs", creator, "POST", { source_url: "https://example.com/video.mp4", source_language: "yo", target_languages: "en", rights_confirmed: true, voice_consent: true });
   assert.equal(notInPlan.status, 402);
   assert.equal((await notInPlan.json()).feature, "link_import");
   await call("/admin/plans/studio", admin, "PUT", { ...studio });
@@ -112,15 +115,48 @@ test("admins control settings, plans and user accounts", async (context) => {
   assert.equal(list.total, 1);
   assert.equal(list.users[0].plan, "enterprise");
 
-  const customised = await call(`/admin/users/${agencyId}`, admin, "PATCH", { overrides: { videos_per_month: 500, permissions: { youtube: false } }, admin_notes: "Signed annual contract" }).then((response) => response.json());
-  assert.equal(customised.plan.videos_per_month, 500);
+  const customised = await call(`/admin/users/${agencyId}`, admin, "PATCH", { overrides: { minutes_per_month: 500, permissions: { youtube: false } }, admin_notes: "Signed annual contract" }).then((response) => response.json());
+  assert.equal(customised.plan.minutes_per_month, 500);
   assert.equal(customised.plan.permissions.youtube, false);
   assert.equal(customised.admin_notes, "Signed annual contract");
-  assert.equal((await planFor({ userId: agencyId })).maxVideosPerMonth, 500, "custom limits apply to uploads");
+  assert.equal((await planFor({ userId: agencyId })).minutes.plan_allowance, 500, "custom limits apply to uploads");
 
-  const withCredits = await call(`/admin/users/${agencyId}/credits`, admin, "POST", { max_minutes: 30, count: 3 }).then((response) => response.json());
-  assert.equal(withCredits.credits.length, 3);
-  assert.equal((await call(`/admin/credits/${withCredits.credits[0].id}`, admin, "DELETE")).status, 204);
+  // Minutes: an admin can add never-expiring minutes (or take some back), and every change is in the history.
+  const withMinutes = await call(`/admin/users/${agencyId}/minutes`, admin, "POST", { minutes: 30, note: "Welcome gift" }).then((response) => response.json());
+  assert.equal(withMinutes.minutes.topup_left, 30);
+  assert.equal(withMinutes.ledger[0].note, "Welcome gift");
+  const fewer = await call(`/admin/users/${agencyId}/minutes`, admin, "POST", { minutes: -10 }).then((response) => response.json());
+  assert.equal(fewer.minutes.topup_left, 20);
+  assert.equal((await call(`/admin/users/${agencyId}/minutes`, admin, "POST", { minutes: "lots" })).status, 400);
+
+  // Reviewers: any account can be made a native-speaker reviewer for chosen languages.
+  const reviewer = await call(`/admin/users/${agencyId}/reviewer`, admin, "PUT", { is_reviewer: true, languages: ["yo", "ha"] }).then((response) => response.json());
+  assert.equal(reviewer.is_reviewer, true);
+  assert.deepEqual(reviewer.reviewer_languages, ["yo", "ha"]);
+  assert.equal((await call(`/admin/users/${agencyId}/reviewer`, admin, "PUT", { is_reviewer: true, languages: [] })).status, 400);
+
+  // Profit check: with the recommended prices, no plan or pack can lose money even if every minute is used.
+  const profit = await call("/admin/profit", admin).then((response) => response.json());
+  assert.deepEqual(profit.warnings, []);
+  const starter = profit.rows.find((row) => row.code === "starter" && row.cycle === "monthly");
+  assert.ok(starter.ngn.worst_profit > 0 && starter.usd.worst_profit > 0);
+  assert.ok(starter.ngn.typical_margin > 60, "typical customers leave a healthy margin");
+  assert.ok(profit.rows.filter((row) => row.ngn?.revenue).every((row) => row.ngn.worst_profit > 0 && row.usd.worst_profit > 0));
+  assert.ok(profit.addons.every((addon) => addon.worst_profit_ngn >= 0));
+  // A plan priced too low is flagged straight away.
+  const cheapStarter = await call("/admin/plans/starter", admin, "PUT", { ...plans.plans.find((plan) => plan.code === "starter"), price_ngn: 5000 }).then((response) => response.json());
+  assert.equal(cheapStarter.price_ngn, 5000);
+  assert.ok((await call("/admin/profit", admin).then((response) => response.json())).warnings.some((warning) => /Starter \(monthly, ₦\)/.test(warning)));
+  const applied = await call("/admin/plans/apply-recommended", admin, "POST", {}).then((response) => response.json());
+  assert.ok(applied.changed.some((change) => change.code === "starter" && change.action === "updated"));
+  assert.deepEqual(applied.report.warnings, []);
+
+  // Minute packs can be edited, and bad packs are refused.
+  const packs = await call("/admin/packs", admin).then((response) => response.json());
+  assert.equal(packs.packs.length, 4);
+  const savedPacks = await call("/admin/packs", admin, "PUT", { packs: [...packs.packs, { code: "min_120", minutes: 120, price_usd: 70, price_ngn: 110000 }] }).then((response) => response.json());
+  assert.equal(savedPacks.packs.length, 5);
+  assert.equal((await call("/admin/packs", admin, "PUT", { packs: [{ code: "x", minutes: 0, price_usd: 1, price_ngn: 1 }] })).status, 400);
 
   // Deleting the enterprise plan moves its subscribers to another plan.
   const removed = await call("/admin/plans/enterprise?move_to=creator", admin, "DELETE").then((response) => response.json());

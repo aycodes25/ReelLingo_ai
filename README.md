@@ -8,41 +8,50 @@
 
 ## What it does
 
-A creator uploads a video (or pastes a link). ReelLingo:
+A creator uploads a video (or picks one from their own YouTube channel, or a Google Drive / Dropbox link). ReelLingo:
 
 1. **Transcribes** the speech with timestamps, detecting the language of every line (videos that switch languages are fine).
 2. **Translates** each line, following the creator's glossary and chosen tone.
-3. *(Optional)* **Pauses for review** so the creator can fix names and slang line by line.
+3. *(Optional)* **Pauses for review**: a native-speaker reviewer (paid add-on) and/or the creator fixes names and slang line by line.
 4. **Separates** the background music and sound effects from the voices.
-5. **Dubs** each line in a clone of the original speaker's voice — one voice per speaker for interviews and skits.
+5. **Dubs** each line in a clone of the original speaker's voice — one voice per speaker for interviews and skits — or in a native Nigerian voice (Spitch) for Yoruba, Hausa, Igbo and Pidgin.
 6. **Mixes** the dub over the original background and puts it back on the video.
-7. **Exports** the dubbed video, an MP3, SRT/VTT subtitles, optional burned-in captions, vertical/square versions, and optional lip-sync.
+7. **Exports** the dubbed video, an MP3, SRT/VTT subtitles, optional burned-in captions, vertical/square versions, optional lip-sync, and on request 3-5 short captioned clips for TikTok and Reels.
+
+Creators who only need subtitles can choose **Subtitles only**: no voice, a tenth of the minutes.
 
 ## Features
 
 | Area | What's included |
 |:---|:---|
-| **Dubbing** | Speaker voice cloning, saved voices, multi-speaker dubbing, background music kept, lip-sync (premium), audio-only podcast dubbing |
+| **Dubbing** | Speaker voice cloning, saved voices, native Yoruba/Hausa/Igbo/Pidgin voices (Spitch) with Yoruba tone marks, multi-speaker dubbing, background music kept, lip-sync (premium add-on), audio-only podcast dubbing, subtitles-only projects |
 | **Translation** | 53 languages, automatic language detection per line, glossary of protected names and terms, tone (natural, formal, casual, keep the local flavour), review-and-edit before dubbing, re-dub only the edited lines |
 | **Exports** | MP4, MP3, SRT, VTT, ASS; burned-in caption styles (classic, boxed, bold, karaoke); 9:16, 1:1, 4:5 and 16:9 versions; AI title, description and hashtags |
-| **Input** | Resumable uploads up to 2 GB, import from YouTube, TikTok, Instagram, Facebook, Google Drive, Dropbox or a direct link, several target languages from one upload |
-| **Sharing** | Public watch pages with a Dub/Original comparison player, one-click YouTube publishing |
-| **Business** | Plans, Paystack (₦) and Stripe ($) checkout, pay-as-you-go credits, referrals, team workspaces, API keys |
+| **Input** | Resumable uploads up to 2 GB, import from the creator's own YouTube channel (ownership checked), Google Drive, Dropbox or a direct link, several target languages from one upload. TikTok/Instagram/Facebook links are refused: creators download their video and upload the file |
+| **Sharing** | Public watch pages with a Dub/Original comparison player, one-click YouTube publishing, add subtitles and translated titles to videos already on YouTube, short clips |
+| **Business** | Plans in minutes (monthly or yearly), Paystack (₦) and Stripe ($), never-expiring minute packs, paid add-ons (lip-sync, human review, clips), a Church & Ministry plan, referrals paid only on profitable purchases, team workspaces and API keys (hidden until switched on) |
+| **Quality & trust** | Human review by native speakers (reviewers are paid per minute from the admin), Voice Lab to rate every voice before customers hear it, consent checkboxes for video rights and voice cloning, Terms of Service and an NDPA-aligned Privacy Policy, "download my data" and "delete my account" |
 | **Operations** | Job queue that survives restarts, retries that resume where they stopped, email and WhatsApp notifications, live progress, rate limiting, virus scanning, structured logs, Sentry, file retention |
-| **Admin** | A separate admin website ([ReelLingo_Admin](https://github.com/aycodes25/ReelLingo_Admin)) to manage users, plans, app-wide settings, teams and payments, plus an API usage dashboard: balance left at each paid provider, usage per user, monthly per-user limits and low-balance email alerts |
+| **Admin** | A separate admin website ([ReelLingo_Admin](https://github.com/aycodes25/ReelLingo_Admin)) to manage users, plans, minutes, app-wide settings, teams and payments; a **Profit check** for every plan and pack; reviewers and their payouts; the Voice Lab; and an API usage dashboard: balance left at each paid provider, usage per user, monthly per-user limits and low-balance email alerts |
 
-## Plans
+## Plans and minutes
 
-Plans live in the database and are edited from the admin website. The defaults follow [`.docs/monetization.md`](.docs/monetization.md):
+Everything is paid for in **minutes**: 1 minute = 1 minute of video dubbed into 1 language. Plans include minutes every month (renewing on the customer's own billing day); **extra minutes** bought in packs never expire. Failed or deleted projects give their minutes back automatically.
 
-| Plan | Price | Videos / month | Max length | Highlights |
+| Plan | Price (monthly / yearly) | Minutes a month | Videos up to | Highlights |
 |:---|:---|:---|:---|:---|
-| Free | ₦0 | 1 | 3 min | Standard voices, watermark |
-| Starter | ₦16,000 / $10 | 5 | 10 min | Voice cloning, no watermark, 2 languages per upload |
-| Creator | ₦40,000 / $25 | 10 | 25 min | Saved voice, multi-speaker, YouTube publishing, 4 languages per upload |
-| Studio | ₦130,000 / $80 | 30 | 60 min | Lip-sync, team workspace, API access, 10 languages per upload |
+| Free | ₦0 | 2 | 3 min | Standard voices, watermark |
+| Subtitles | ₦4,500 / ₦45,000 · $3 / $30 | 5 (= 50 of subtitles) | 60 min | Subtitles in 50+ languages, caption styles |
+| Starter | ₦15,000 / ₦150,000 · $10 / $100 | 16 | 10 min | Voice cloning, no watermark, short clips |
+| Creator | ₦38,000 / ₦380,000 · $25 / $250 | 40 | 30 min | Saved voice, multi-speaker, YouTube, human review & lip-sync add-ons |
+| Studio | ₦115,000 / ₦1,150,000 · $75 / $750 | 125 | 60 min | Lip-sync add-on, team workspace, API access |
+| Church & Ministry | ₦225,000 / ₦2,250,000 · $150 / $1,500 | 250 | 120 min | Sermons in English, French, Yoruba, Hausa & Igbo, pastor's saved voice |
+| Agency & Nollywood | Custom | Custom | 120 min | Contact sales |
 
-Pay-as-you-go credits cover one video each: up to 5, 15, 30 or 60 minutes.
+Minute packs: 5 min ₦5,000 · 15 min ₦14,500 · 30 min ₦28,500 · 60 min ₦57,000 (or $3.50 / $9.50 / $18.50 / $36).
+Extras use more minutes per minute of video: subtitles only ×0.1, lip-sync +12, human review +1, a set of short clips 1 minute.
+
+**Why these prices are safe:** a dubbed minute costs at most about **$0.45** in AI services (fast talker, every paid service on, at ₦1,600/$ — above today's rate on purpose). Every plan and pack above stays profitable even if a customer uses every single minute; typical customers leave a 60-80% margin. Free users together can never cost more than a monthly budget you set (default $20). Admin → **Profit check** shows the numbers for your own provider prices and warns you if any price could lose money; **Apply recommended pricing** puts these values on your live plans.
 
 ---
 
@@ -79,7 +88,9 @@ All keys go in **`backend/.env`** (copy `backend/.env.example` to start). Every 
 | Video storage | `STORAGE_PROVIDER=r2`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` (leave `STORAGE_PROVIDER` empty to use Supabase Storage) |
 | Payments | `PAYSTACK_SECRET_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` |
 | Notifications | `RESEND_API_KEY`, `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` |
-| Premium & monitoring | `OPENAI_ADMIN_KEY` (OpenAI billing on the usage dashboard), `SYNC_API_KEY` (lip-sync), `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (YouTube), `SENTRY_DSN`, `CLAMAV_HOST` |
+| Premium & monitoring | `SPITCH_API_KEY` (native Nigerian voices), `OPENAI_ADMIN_KEY` (OpenAI billing on the usage dashboard), `SYNC_API_KEY` (lip-sync), `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (YouTube), `SENTRY_DSN`, `CLAMAV_HOST` |
+| Plans renewing automatically | `PAYSTACK_PLAN_<PLAN>` and `PAYSTACK_PLAN_<PLAN>_YEARLY` (and `STRIPE_PRICE_…`) — optional; without them customers pay per period by card, transfer or USSD |
+| Legal pages | `LEGAL_COMPANY_NAME`, `LEGAL_ADDRESS`, `DPO_EMAIL` (also editable in Admin → App settings → Legal) |
 
 Optional features stay switched off until their keys are added. Business settings — which features are on, limits, maintenance mode, announcements — are changed live from the admin website.
 
@@ -97,11 +108,33 @@ If you store videos in Supabase Storage, make sure the `reellingo-videos` bucket
 
 When the code's tables change, `npm --prefix backend run sql` regenerates `schema.sql` (without connecting to any database) and you run it again.
 
+### Keep the database awake and backed up (free)
+
+Free Supabase projects pause after 7 days without activity and don't keep backups you can restore. The workflow [`.github/workflows/database-keepalive-and-backup.yml`](.github/workflows/database-keepalive-and-backup.yml) runs every day on GitHub's computers (even when your PC is off): it touches the database so it never pauses, and saves a full copy to Cloudflare R2, keeping the last 14 days. It only reads the database.
+
+Set it up once:
+
+1. **Cloudflare:** R2 → **Create bucket** → name it `reellingo-backups` (private). Then R2 → **Manage API tokens** → **Create API token** → *Object Read & Write*, bucket `reellingo-backups` → copy the Access Key ID and Secret.
+2. **Supabase:** Project → **Connect** → copy the **Session pooler** connection string (port 5432) and put your database password in it.
+3. **GitHub:** this repository → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**, and add:
+   `DATABASE_URL` (step 2), `R2_ACCOUNT_ID`, `R2_BACKUP_ACCESS_KEY_ID`, `R2_BACKUP_SECRET_ACCESS_KEY` (step 1), `R2_BACKUP_BUCKET` = `reellingo-backups`.
+   Optional: `SUPABASE_URL` and `SUPABASE_ANON_KEY` (Supabase → Project Settings → API) for an extra API ping.
+4. **Test it:** GitHub → **Actions** → *Keep the database awake and back it up* → **Run workflow**. A green tick means it worked; the backup appears in your R2 bucket under `database/`.
+
+To restore a backup into a new Supabase project: download the `.dump` file from R2, then run `pg_restore --no-owner --dbname "<new project's connection string>" reellingo-db-YYYY-MM-DD.dump` (or ask for help). Once customers pay you, upgrading to Supabase Pro ($25/month) adds point-in-time backups and removes the pause entirely.
+
 ### Admin website
 
 The admin area is a separate app: **[ReelLingo_Admin](https://github.com/aycodes25/ReelLingo_Admin)**. Clone it next to this project, run `npm install` and `npm run dev`, and open http://localhost:3001. Sign in with an email listed in `ADMIN_EMAILS`. Admins also see an **Admin ↗** link in the studio sidebar.
 
 For Google/Facebook sign-in on the admin site, add `http://localhost:3001/auth/callback` under Supabase → Authentication → URL Configuration → Redirect URLs.
+
+### Quality, reviewers and legal
+
+- **Nigerian voices:** add `SPITCH_API_KEY`, then use **Admin → Voice Lab** to generate the same sentence with every engine and voice, send the samples to native Yoruba, Hausa and Igbo speakers, and record their scores before choosing the engine in Admin → App settings → Nigerian voices. Videos *spoken* in Yoruba, Hausa, Igbo or Pidgin are transcribed with ElevenLabs Scribe, which handles them far better than Whisper.
+- **Human reviewers:** open a user in Admin → Users and tick *This person is a reviewer* with their languages. They see a Reviews page in the app, pick up projects, correct them and submit. Their earnings show in Admin → Reviewers; mark them paid after sending the money. Reviews nobody picks up within 48 hours continue without review and are refunded.
+- **YouTube:** creators connect their channel in Settings to import their own videos and add subtitles/translated titles to videos already published. People who connected before this update must disconnect and connect again once (new permission).
+- **Legal:** fill in your CAC business name, address and privacy email in Admin → App settings → Legal; they appear on `/terms` and `/privacy`. These pages follow Nigeria's Data Protection Act 2023, but have a Nigerian lawyer review them before launch.
 
 ---
 

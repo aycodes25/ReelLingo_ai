@@ -8,6 +8,7 @@ import { getLanguage } from "./languages.js";
 import { logger } from "./logger.js";
 import { runCapture } from "./media.js";
 import { responseError, withRetries } from "./retry.js";
+import { spitchVoiceFor, synthesizeWithSpitch, useSpitchVoice } from "./spitch.js";
 
 const ELEVENLABS_API = "https://api.elevenlabs.io";
 const TRACK_SAMPLE_RATE = 24000;
@@ -133,7 +134,7 @@ function explainCloneFailure(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function synthesizeWithElevenLabs(text, voiceId, languageCode) {
+export async function synthesizeWithElevenLabs(text, voiceId, languageCode) {
   const body = { model_id: config.elevenlabsModel, text };
   if (languageCode) body.language_code = languageCode;
   const response = await elevenFetch(`/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`, {
@@ -148,7 +149,7 @@ async function synthesizeWithElevenLabs(text, voiceId, languageCode) {
 }
 
 let openai;
-async function synthesizeWithOpenAI(text, targetLanguage, voice = "alloy") {
+export async function synthesizeWithOpenAI(text, targetLanguage, voice = "alloy") {
   if (!config.openaiApiKey) throw new Error("OPENAI_API_KEY is required for speech synthesis.");
   openai ||= new OpenAI({ apiKey: config.openaiApiKey, baseURL: config.openaiBaseUrl, timeout: 120_000 });
   const target = getLanguage(targetLanguage)?.name || targetLanguage;
@@ -211,20 +212,23 @@ export function clipCacheKey(parts) {
  */
 export async function dubSegments({
   segments, sourceAudioPath, sourceSegments = segments, outputPath, targetLanguage, voiceClone, durationSeconds, workdir,
-  savedVoiceId = null, clipCache = null, voiceScope = "job",
+  savedVoiceId = null, clipCache = null, voiceScope = "job", preferredVoice = null,
 }) {
   const speakable = segments.map((segment, index) => ({ ...segment, index })).filter((segment) => segment.text?.trim());
   if (!speakable.length) throw new Error("No translated speech is available to dub.");
   const clipsDirectory = join(workdir, "dub-clips");
   await mkdir(clipsDirectory, { recursive: true });
 
-  let provider = config.elevenlabsApiKey ? "elevenlabs" : "openai";
+  // Yoruba, Hausa, Igbo and Pidgin use Spitch's native Nigerian voices unless the creator wants their own (cloned) voice.
+  const nativeVoices = useSpitchVoice(targetLanguage, { cloned: Boolean(voiceClone || savedVoiceId) });
+  let provider = nativeVoices ? "spitch" : config.elevenlabsApiKey ? "elevenlabs" : "openai";
   let fallbackReason = provider === "openai" ? "ElevenLabs is not configured." : null;
   const ranked = rankSpeakers(sourceSegments.length ? sourceSegments : speakable);
   const rankOf = new Map(ranked.map((item, index) => [item.speaker, index]));
 
   const voiceKeyFor = (speaker) => {
     const rank = rankOf.get(speaker) ?? 0;
+    if (provider === "spitch") return `spitch:${spitchVoiceFor(targetLanguage, rank, preferredVoice)}`;
     if (provider === "openai") return `openai:${OPENAI_VOICES[rank % OPENAI_VOICES.length]}`;
     if (savedVoiceId && rank === 0) return `saved:${savedVoiceId}`;
     if (voiceClone) return `clone:${voiceScope}:${speaker}`;
@@ -281,6 +285,11 @@ export async function dubSegments({
       voices.set(speaker, voiceId);
       speakerResults.push({ speaker, seconds: Math.round(seconds * 10) / 10, voice: savedVoiceId && rank === 0 ? "saved" : cloned ? "clone" : "standard" });
     }
+  } else if (provider === "spitch") {
+    for (const { speaker, seconds } of ranked) {
+      voices.set(speaker, spitchVoiceFor(targetLanguage, rankOf.get(speaker), preferredVoice));
+      speakerResults.push({ speaker, seconds: Math.round(seconds * 10) / 10, voice: "native" });
+    }
   } else {
     for (const { speaker, seconds } of ranked) {
       voices.set(speaker, OPENAI_VOICES[rankOf.get(speaker) % OPENAI_VOICES.length]);
@@ -293,10 +302,12 @@ export async function dubSegments({
     const supported = provider === "elevenlabs" ? await modelLanguages() : new Set();
     const languageCode = supported.has(targetLanguage) ? targetLanguage : undefined;
     const fresh = await mapWithConcurrency(pending, TTS_CONCURRENCY, async (segment) => {
-      const voice = voices.get(speakerOf(segment)) || (provider === "openai" ? "alloy" : config.elevenlabsFallbackVoiceId);
-      const audio = provider === "elevenlabs"
-        ? await synthesizeWithElevenLabs(segment.text.trim(), voice, languageCode)
-        : await synthesizeWithOpenAI(segment.text.trim(), targetLanguage, voice);
+      const voice = voices.get(speakerOf(segment)) || (provider === "openai" ? "alloy" : provider === "spitch" ? spitchVoiceFor(targetLanguage, 0, preferredVoice) : config.elevenlabsFallbackVoiceId);
+      const audio = provider === "spitch"
+        ? await synthesizeWithSpitch(segment.text.trim(), voice, targetLanguage)
+        : provider === "elevenlabs"
+          ? await synthesizeWithElevenLabs(segment.text.trim(), voice, languageCode)
+          : await synthesizeWithOpenAI(segment.text.trim(), targetLanguage, voice);
       const path = join(clipsDirectory, `clip-${String(segment.index).padStart(4, "0")}.mp3`);
       await writeFile(path, audio);
       produced.push({ key: keyFor(segment), path });

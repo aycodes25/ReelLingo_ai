@@ -3,6 +3,7 @@ import { config } from "./config.js";
 import { recordChatUsage } from "./costs.js";
 import { getLanguage, languages } from "./languages.js";
 import { withRetries } from "./retry.js";
+import { addYorubaToneMarks, spitchConfigured, spitchTranslateSegments, spitchTranslateText, toneMarkSegments, useSpitchTranslation } from "./spitch.js";
 
 const ai = config.openaiApiKey ? new OpenAI({ apiKey: config.openaiApiKey, baseURL: config.openaiBaseUrl, timeout: 600_000 }) : null;
 
@@ -108,7 +109,22 @@ function toneInstruction(tone) {
   return { base, extra };
 }
 
-export async function translate(segments, targetLanguage, requestCompletion, { retryDelayMs, glossary = [], tone = "natural" } = {}) {
+/** Yoruba lines get their tone marks restored (when Spitch is set up), so the voice reads the right tones. */
+function wantsToneMarks(targetLanguage) {
+  return targetLanguage === "yo" && config.yorubaToneMarks && spitchConfigured();
+}
+
+export async function translate(segments, targetLanguage, requestCompletion, options = {}) {
+  // Yoruba, Hausa and Igbo go to Spitch (trained on Nigerian languages) when it's set up. Tests inject their own model.
+  if (!requestCompletion && useSpitchTranslation(targetLanguage)) {
+    const translated = await spitchTranslateSegments(segments, targetLanguage, { glossary: options.glossary || [] });
+    return wantsToneMarks(targetLanguage) ? toneMarkSegments(translated) : translated;
+  }
+  const translated = await translateWithOpenAI(segments, targetLanguage, requestCompletion, options);
+  return !requestCompletion && wantsToneMarks(targetLanguage) ? toneMarkSegments(translated) : translated;
+}
+
+async function translateWithOpenAI(segments, targetLanguage, requestCompletion, { retryDelayMs, glossary = [], tone = "natural" } = {}) {
   const target = getLanguage(targetLanguage)?.name || targetLanguage;
   if (!requestCompletion && !ai) throw new Error("OPENAI_API_KEY is required for translation.");
   const complete = requestCompletion || defaultComplete;
@@ -152,6 +168,16 @@ export async function translate(segments, targetLanguage, requestCompletion, { r
 
 /** Re-translates one edited line, giving the model its neighbours so pronouns and references stay consistent. */
 export async function translateLine(segments, index, targetLanguage, { glossary = [], tone = "natural", requestCompletion } = {}) {
+  if (!requestCompletion && useSpitchTranslation(targetLanguage)) {
+    const segment = segments[index];
+    const text = await spitchTranslateText(segment.text, targetLanguage, segment.language && segment.language !== "und" ? segment.language : undefined);
+    return wantsToneMarks(targetLanguage) ? addYorubaToneMarks(text) : text;
+  }
+  const line = await translateLineWithOpenAI(segments, index, targetLanguage, { glossary, tone, requestCompletion });
+  return !requestCompletion && wantsToneMarks(targetLanguage) ? addYorubaToneMarks(line) : line;
+}
+
+async function translateLineWithOpenAI(segments, index, targetLanguage, { glossary = [], tone = "natural", requestCompletion } = {}) {
   const complete = requestCompletion || defaultComplete;
   const target = getLanguage(targetLanguage)?.name || targetLanguage;
   const segment = segments[index];

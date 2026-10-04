@@ -2,12 +2,13 @@
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import Link from "next/link";
-import { ChevronDown, CircleAlert, CircleCheck, Copy, Gift, KeyRound, Mic, Trash2, Upload, Youtube } from "lucide-react";
+import { ChevronDown, CircleAlert, CircleCheck, Copy, Download, Gift, KeyRound, Mic, ShieldCheck, Trash2, Upload, Youtube } from "lucide-react";
 import AppShell from "@/components/AppShell";
 import {
-  connectYoutube, createApiKeyRequest, deleteVoice, disconnectYoutube, getApiHealth, getApiKeys, getIntegrations, getMe, getVoices, revokeApiKey,
-  saveVoiceFromSample, updateMe,
+  clearStoredToken, connectYoutube, createApiKeyRequest, deleteMyAccount, deleteVoice, disconnectYoutube, downloadMyData, getApiHealth, getApiKeys,
+  getIntegrations, getMe, getVoices, revokeApiKey, saveVoiceFromSample, updateMe,
 } from "@/lib/api";
+import { formatMinutes } from "@/lib/format";
 import type { ApiHealth, ApiKey, Me, SavedVoice } from "@/lib/types";
 
 const CREATOR_TYPES = ["Educational", "Lifestyle & Vlogging", "Tech & Reviews", "Entertainment & Comedy", "Music", "Food & Cooking", "Business & Finance", "News & Documentary", "Faith & Inspiration", "Other"];
@@ -41,6 +42,8 @@ export default function SettingsPage() {
   const [youtubeFlash, setYoutubeFlash] = useState<Flash>(null);
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const [privacyFlash, setPrivacyFlash] = useState<Flash>(null);
+  const [deleteText, setDeleteText] = useState("");
   const sampleRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -180,17 +183,18 @@ export default function SettingsPage() {
           <h2>Plan &amp; usage</h2>
           <dl className="kv" style={{ marginTop: 12 }}>
             <div><dt>Plan</dt><dd>{me?.plan.plan.name ?? "—"}</dd></div>
-            <div><dt>Videos this month</dt><dd>{me ? `${me.plan.videos_this_month} of ${me.plan.max_videos_per_month}` : "—"}</dd></div>
-            <div><dt>Minutes processed this month</dt><dd>{me ? me.plan.minutes_this_month : "—"}</dd></div>
+            <div><dt>Minutes left</dt><dd>{me ? formatMinutes(me.plan.minutes.available) : "—"}</dd></div>
+            <div><dt>Plan minutes this month</dt><dd>{me ? `${formatMinutes(me.plan.minutes.plan_used)} of ${formatMinutes(me.plan.minutes.plan_allowance)} used` : "—"}</dd></div>
+            <div><dt>Extra minutes (never expire)</dt><dd>{me ? formatMinutes(me.plan.minutes.topup_left) : "—"}</dd></div>
+            <div><dt>Plan minutes renew</dt><dd>{me ? new Date(me.plan.minutes.resets_at).toLocaleDateString() : "—"}</dd></div>
             <div><dt>Maximum video length</dt><dd>{me ? `${me.plan.max_video_minutes} min` : "—"}</dd></div>
-            <div><dt>Pay-as-you-go credits</dt><dd>{me ? me.plan.credits.length : "—"}</dd></div>
           </dl>
           <Link href="/billing" className="btn btn-outline btn-block" style={{ marginTop: 16 }}>Manage plan &amp; billing</Link>
         </section>
 
         <section className="card card-pad" id="referral">
           <h2><Gift size={18} style={{ display: "inline", verticalAlign: "-3px" }} /> Invite creators</h2>
-          <p className="card-sub">When someone signs up with your link and finishes their first dub, you each get {me?.referral.bonus_videos === 1 ? "a free video" : `${me?.referral.bonus_videos ?? 1} free videos`} (up to {me?.referral.bonus_minutes ?? 10} min).</p>
+          <p className="card-sub">When someone signs up with your link and buys their first plan or minutes, you get {formatMinutes(me?.referral.bonus_minutes ?? 5)} free and they get a {formatMinutes(me?.referral.new_user_minutes ?? 2)} welcome bonus. Free minutes never expire.</p>
           <div className="share-link" style={{ marginTop: 14 }}>
             <input readOnly value={me?.referral.link || ""} aria-label="Your referral link" onFocus={(event) => event.currentTarget.select()} />
             <button type="button" onClick={() => me && copy(me.referral.link)} aria-label="Copy referral link">{copied ? <CircleCheck size={16} color="var(--teal)" /> : <Copy size={16} />}</button>
@@ -233,12 +237,12 @@ export default function SettingsPage() {
             <p className="card-sub">YouTube publishing needs a Google OAuth client (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET) on the server.</p>
           ) : youtube.connected ? (
             <>
-              <p className="card-sub">Connected to <b>{youtube.channel}</b>. Publish any dub from its result page.</p>
+              <p className="card-sub">Connected to <b>{youtube.channel}</b>. Import your own videos when you start a project, publish dubs, and add subtitles and translated titles to videos already on your channel. If adding subtitles asks for new permissions, disconnect and connect again.</p>
               <button type="button" className="btn btn-outline btn-sm" style={{ marginTop: 12 }} onClick={async () => { await disconnectYoutube(); setYoutube({ ...youtube, connected: false, channel: null }); }}>Disconnect</button>
             </>
           ) : (
             <>
-              <p className="card-sub">Upload finished dubs to your channel with their translated title, description and hashtags.</p>
+              <p className="card-sub">Import videos from your own channel, upload finished dubs, and add new languages (subtitles and translated titles) to videos you&apos;ve already published.</p>
               <button type="button" className="btn btn-primary btn-sm" style={{ marginTop: 12 }} onClick={async () => {
                 try {
                   window.location.href = (await connectYoutube()).url;
@@ -251,7 +255,7 @@ export default function SettingsPage() {
           <FlashMessage flash={youtubeFlash} />
         </section>
 
-        <section className="card card-pad" id="api-keys">
+        {health?.settings?.features?.api !== false && <section className="card card-pad" id="api-keys">
           <h2><KeyRound size={18} style={{ display: "inline", verticalAlign: "-3px" }} /> API keys</h2>
           <p className="card-sub">{keys?.available ? <>Automate dubbing from your own tools. See the <Link href="/docs/api" className="link">API reference</Link>.</> : "API access is included in the Studio plan."}</p>
           {newKey?.key && (
@@ -281,6 +285,43 @@ export default function SettingsPage() {
             </form>
           )}
           <FlashMessage flash={keyFlash} />
+        </section>}
+
+        <section className="card card-pad" id="privacy">
+          <h2><ShieldCheck size={18} style={{ display: "inline", verticalAlign: "-3px" }} /> Your data</h2>
+          <p className="card-sub">
+            Under Nigeria&apos;s Data Protection Act you can get a copy of everything we store about you, or have it deleted.
+            Read our <Link href="/privacy" className="link">Privacy Policy</Link> and <Link href="/terms" className="link">Terms</Link>.
+          </p>
+          <button type="button" className="btn btn-outline btn-sm" style={{ marginTop: 12 }} disabled={busy === "export"} onClick={async () => {
+            setBusy("export");
+            setPrivacyFlash(null);
+            try {
+              await downloadMyData();
+              setPrivacyFlash({ tone: "success", text: "Your data was downloaded as a JSON file." });
+            } catch (error) {
+              setPrivacyFlash({ tone: "error", text: error instanceof Error ? error.message : "Could not download your data." });
+            } finally {
+              setBusy(null);
+            }
+          }}><Download size={15} />{busy === "export" ? "Preparing…" : "Download my data"}</button>
+          <details className="danger-zone">
+            <summary>Delete my account</summary>
+            <p className="field-hint">This permanently deletes your account, projects, videos, transcripts and saved voices, and cancels your plan. Unused minutes are lost. Payment records are kept for tax reasons. This can&apos;t be undone.</p>
+            <input className="input input-plain" placeholder="Type DELETE to confirm" value={deleteText} onChange={(event) => setDeleteText(event.target.value)} aria-label="Type DELETE to confirm" />
+            <button type="button" className="btn btn-danger btn-sm" disabled={deleteText !== "DELETE" || busy === "delete"} onClick={async () => {
+              setBusy("delete");
+              try {
+                await deleteMyAccount();
+                clearStoredToken();
+                window.location.href = "/?deleted=1";
+              } catch (error) {
+                setPrivacyFlash({ tone: "error", text: error instanceof Error ? error.message : "Could not delete your account." });
+                setBusy(null);
+              }
+            }}><Trash2 size={15} />{busy === "delete" ? "Deleting…" : "Delete my account permanently"}</button>
+          </details>
+          <FlashMessage flash={privacyFlash} />
         </section>
 
         <section className="card card-pad" id="status">

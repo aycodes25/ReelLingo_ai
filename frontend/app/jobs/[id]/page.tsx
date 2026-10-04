@@ -67,7 +67,10 @@ export default function JobStatusPage() {
         controller.abort();
         setTimeout(() => router.replace(`/result/${jobId}`), 1200);
       }
-      if (updated.status === "awaiting_review" && lastStepRef.current !== "review-ready") {
+      if (updated.status === "awaiting_review" && updated.review_state === "human_pending" && lastStepRef.current !== "human-review") {
+        lastStepRef.current = "human-review";
+        push({ text: "A native speaker is now checking the translation.", tone: "warn" });
+      } else if (updated.status === "awaiting_review" && updated.review_state !== "human_pending" && lastStepRef.current !== "review-ready") {
         lastStepRef.current = "review-ready";
         push({ text: "The translation is ready for your review.", tone: "warn" });
       }
@@ -123,7 +126,8 @@ export default function JobStatusPage() {
   }
 
   const failed = job?.status === "failed";
-  const reviewing = job?.status === "awaiting_review";
+  const withReviewer = job?.status === "awaiting_review" && job.review_state === "human_pending";
+  const reviewing = job?.status === "awaiting_review" && !withReviewer;
   const current = job ? (job.status === "done" ? PIPELINE_STAGES.length : stageIndex(job.current_step)) : 0;
   const percent = job ? progressPercent(job) : 0;
   const stage = PIPELINE_STAGES[Math.min(current, PIPELINE_STAGES.length - 1)];
@@ -132,7 +136,7 @@ export default function JobStatusPage() {
     <AppShell crumbs={crumbs}>
       <div className="page-head">
         <div>
-          <h1>{failed ? "Processing Stopped" : reviewing ? "Ready for Your Review" : "Processing Video"}</h1>
+          <h1>{failed ? "Processing Stopped" : withReviewer ? "With a Native-Speaker Reviewer" : reviewing ? "Ready for Your Review" : "Processing Video"}</h1>
           <div className="proc-head-title">Project: <strong>{fileName}</strong>{job?.voice_clone && <span className="badge-soft badge">VOICE CLONE</span>}</div>
         </div>
         <div className="page-head-actions">
@@ -161,6 +165,9 @@ export default function JobStatusPage() {
                 <button type="button" className="link" onClick={handleRetry} disabled={retrying}><RotateCcw size={13} style={{ display: "inline", verticalAlign: "-2px" }} /> {retrying ? "Retrying…" : "Retry from where it stopped"}</button>
               )}
             </span></div>
+          )}
+          {withReviewer && (
+            <div className="alert alert-info"><PencilLine size={16} /><span><strong>A native speaker is checking your transcript and translation.</strong> They fix names, slang and tone before {job?.options.mode === "subtitles" ? "your subtitles are made" : "the voice is generated"}. This usually takes less than a day; we&apos;ll email you when your project continues.</span></div>
           )}
           {reviewing && (
             <div className="alert alert-success"><PencilLine size={16} /><span><strong>Your translation is ready.</strong> Check names, slang and phrasing line by line, then generate the voice. <Link href={`/jobs/${params.id}/edit`} className="link">Review translation →</Link></span></div>
@@ -226,7 +233,7 @@ export default function JobStatusPage() {
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src="/images/creator-studio.png" alt="" />
               <span className="chip">Source: {job ? sourceLabel(job, languages) : "…"}</span>
-              {!failed && !reviewing && job?.status !== "done" && <div className="spinner-wrap"><span><LoaderCircle size={24} className="spin" /></span></div>}
+              {!failed && !reviewing && !withReviewer && job?.status !== "done" && <div className="spinner-wrap"><span><LoaderCircle size={24} className="spin" /></span></div>}
             </div>
             <div className="source-body">
               <h3>{fileName}</h3>

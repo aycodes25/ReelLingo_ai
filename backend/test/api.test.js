@@ -79,7 +79,8 @@ test("demo API exposes regional languages and protects job routes", async (conte
   assert.equal(emptyUsage.tier, "free");
   assert.equal(emptyUsage.videos_this_month, 0);
   assert.equal(emptyUsage.minutes_this_month, 0);
-  assert.equal(emptyUsage.max_videos_per_month, 1, "free plan limits come from the plans table (monetization.md)");
+  assert.equal(emptyUsage.minutes.plan_allowance, 2, "free plan limits come from the plans table");
+  assert.equal(emptyUsage.minutes.available, 2);
   assert.equal(emptyUsage.max_video_minutes, 3);
   assert.equal(emptyUsage.plan.watermark, true);
   assert.equal(emptyUsage.plan.voice_clone, false);

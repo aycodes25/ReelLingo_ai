@@ -6,6 +6,7 @@ import Link from "next/link";
 import { ArrowRight, ChevronDown, CircleAlert, Gift, Globe, Mail, Mic, UserRound, Video } from "lucide-react";
 import BrandLogo from "@/components/BrandLogo";
 import { OAuthButtons, PasswordInput } from "@/components/AuthFields";
+import { TERMS_AGREED_KEY } from "@/components/AppShell";
 import { getApiHealth, rememberReferral, signup, storedReferral } from "@/lib/api";
 import type { ApiHealth } from "@/lib/types";
 
@@ -40,6 +41,12 @@ export default function SignupPage() {
     setIsSubmitting(true);
     setErrorMessage(null);
     try {
+      // Recorded on the server the first time they open the app (after confirming their email if needed).
+      try {
+        window.localStorage.setItem(TERMS_AGREED_KEY, "1");
+      } catch {
+        // storage disabled: they'll be asked to accept once inside the app
+      }
       const session = await signup(email, password, { name: name.trim(), creatorType });
       if (session.confirmation_required || !session.access_token) {
         setConfirmEmail(true);
@@ -82,7 +89,7 @@ export default function SignupPage() {
             <div className="alert alert-warn" style={{ marginBottom: 20 }}><CircleAlert size={16} /><span><strong>Account sign-up is not configured.</strong> Add SUPABASE_URL and SUPABASE_KEY to backend/.env, then restart the backend.</span></div>
           )}
           {errorMessage && <div role="alert" className="alert alert-error" style={{ marginBottom: 20 }}><CircleAlert size={16} /><span>{errorMessage}</span></div>}
-          {referral && !confirmEmail && <div className="alert alert-success" style={{ marginBottom: 20 }}><Gift size={16} /><span><strong>You were invited by a creator.</strong> Finish your first dub and you both get a free bonus video.</span></div>}
+          {referral && !confirmEmail && <div className="alert alert-success" style={{ marginBottom: 20 }}><Gift size={16} /><span><strong>You were invited by a creator.</strong> When you buy your first plan or minutes, you get bonus minutes and so do they.</span></div>}
           {confirmEmail && <div role="status" className="alert alert-success" style={{ marginBottom: 20 }}><Mail size={16} /><span><strong>Check your inbox.</strong> We sent a confirmation link to {email}. Open it, then <Link href="/login" className="link">log in</Link>.</span></div>}
 
           <form onSubmit={handleSubmit} className="form-stack">
@@ -116,7 +123,7 @@ export default function SignupPage() {
             </div>
             <label className="checkbox">
               <input type="checkbox" checked={agreed} onChange={(event) => setAgreed(event.target.checked)} />
-              <span>I agree to the <a className="link" style={{ fontWeight: 500 }} href="#">Terms of Service</a> and <a className="link" style={{ fontWeight: 500 }} href="#">Privacy Policy</a>.</span>
+              <span>I&apos;m 18 or older and agree to the <Link className="link" style={{ fontWeight: 500 }} href="/terms" target="_blank">Terms of Service</Link> and <Link className="link" style={{ fontWeight: 500 }} href="/privacy" target="_blank">Privacy Policy</Link>.</span>
             </label>
             <button type="submit" disabled={!isComplete || isSubmitting || signUpUnavailable} className="btn btn-primary btn-block auth-submit">
               {isSubmitting ? "Creating account…" : "Create Account"} <ArrowRight size={17} />

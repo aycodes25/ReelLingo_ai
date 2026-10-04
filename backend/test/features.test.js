@@ -114,11 +114,17 @@ test("glossary and tone are sent to the translator", async () => {
   assert.match(prompt, /Iya Basira/);
 });
 
-test("import links are classified and private network targets are refused", async () => {
-  assert.equal(classifyImportUrl("https://www.youtube.com/watch?v=abc").kind, "social");
-  assert.equal(classifyImportUrl("https://www.facebook.com/watch/?v=123").kind, "social");
-  assert.equal(classifyImportUrl("https://fb.watch/abc/").kind, "social");
-  assert.equal(classifyImportUrl("https://vm.tiktok.com/xyz").kind, "social");
+test("import links are classified, social sites are refused and private network targets are refused", async () => {
+  // Social links are refused (their rules forbid downloading, and the creator may not own the video).
+  assert.throws(() => classifyImportUrl("https://www.youtube.com/watch?v=abc"), /connect your channel/);
+  assert.throws(() => classifyImportUrl("https://www.facebook.com/watch/?v=123"), /can't be imported/);
+  assert.throws(() => classifyImportUrl("https://fb.watch/abc/"), /can't be imported/);
+  assert.throws(() => classifyImportUrl("https://vm.tiktok.com/xyz"), /can't be imported/);
+  assert.throws(() => classifyImportUrl("https://www.instagram.com/reel/abc/"), /can't be imported/);
+  // A video from the creator's own (verified) YouTube channel is imported internally.
+  const own = classifyImportUrl("youtube:dQw4w9WgXcQ");
+  assert.equal(own.kind, "social");
+  assert.equal(own.url.href, "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
   assert.match(classifyImportUrl("https://drive.google.com/file/d/1AbCdEfGhIjKlMn/view?usp=sharing").url.href, /drive\.usercontent\.google\.com\/download\?id=1AbCdEfGhIjKlMn/);
   assert.equal(classifyImportUrl("https://www.dropbox.com/s/x/video.mp4?dl=0").url.searchParams.get("dl"), "1");
   assert.throws(() => classifyImportUrl("ftp://example.com/video.mp4"), /http/);
@@ -127,12 +133,23 @@ test("import links are classified and private network targets are refused", asyn
   await assert.rejects(assertPublicHost(new URL("http://[::1]/x")), /private network/);
 });
 
-test("uploads use the monthly allowance first, then credits, and explain what's missing", () => {
-  const plan = { maxVideosPerMonth: 5, videosThisMonth: 4, maxVideoMinutes: 10, credits: [{ id: 7, max_minutes: 30 }] };
-  assert.deepEqual(allocate(plan, ["en", "fr"], 300, { trimToFit: false }).allocations, [{ target: "en", creditId: null }, { target: "fr", creditId: 7 }]);
-  assert.equal(allocate({ ...plan, credits: [] }, ["en"], 20 * 60, { trimToFit: true }).trimSeconds, 600);
-  assert.throws(() => allocate({ ...plan, credits: [] }, ["en"], 20 * 60, { trimToFit: false }), (error) => error.status === 402 && error.extra.code === "too_long" && error.extra.can_trim);
-  assert.throws(() => allocate({ ...plan, videosThisMonth: 5, credits: [] }, ["en"], 60, { trimToFit: false }), (error) => error.extra.code === "quota");
+test("uploads are charged in minutes per language, with trimming and clear messages when minutes run out", () => {
+  const plan = { maxVideoMinutes: 10, minutes: { available: 12 } };
+  // 5 minutes into 2 languages = 10 minutes.
+  assert.deepEqual(allocate(plan, ["en", "fr"], 300, {}), { perTarget: 5, total: 10, trimSeconds: null, weight: 1 });
+  // Subtitles only use a tenth: 5 minutes of video = 0.5 minutes.
+  assert.equal(allocate(plan, ["en"], 300, { mode: "subtitles" }).perTarget, 0.5);
+  // Lip-sync adds 12 minutes per minute of video, human review 1.
+  assert.equal(allocate({ ...plan, minutes: { available: 100 } }, ["en"], 60, { lipSync: true, humanReview: true }).perTarget, 14);
+  // Longer than the plan allows: trim to the plan's limit, or explain.
+  assert.equal(allocate({ ...plan, minutes: { available: 100 } }, ["en"], 20 * 60, { trimToFit: true }).trimSeconds, 600);
+  assert.throws(() => allocate(plan, ["en"], 20 * 60, {}), (error) => error.status === 402 && error.extra.code === "too_long" && error.extra.can_trim);
+  // Not enough minutes: 3 languages × 5 minutes = 15 > 12.
+  assert.throws(() => allocate(plan, ["en", "fr", "ha"], 300, {}), (error) => error.extra.code === "minutes" && error.extra.needed === 15 && error.extra.available === 12);
+  // …unless it may be trimmed to what's left: 12 minutes / 3 languages = 4 minutes each.
+  assert.equal(allocate(plan, ["en", "fr", "ha"], 300, { trimToFit: true }).trimSeconds, 240);
+  // Links with an unknown length are charged once downloaded.
+  assert.equal(allocate(plan, ["en"], null, {}).total, 0);
 });
 
 test("integration tokens are encrypted and OAuth state is tamper-proof", () => {

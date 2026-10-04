@@ -47,8 +47,8 @@ export default function DashboardPage() {
       ? "Add ELEVENLABS_API_KEY to backend/.env to dub in the original speaker's voice."
       : null;
 
-  const videoLimit = usage?.max_videos_per_month || 1;
-  const usedPercent = usage ? Math.min(100, Math.round((usage.videos_this_month / videoLimit) * 100)) : 0;
+  const allowance = usage?.minutes.plan_allowance || 0;
+  const usedPercent = usage && allowance ? Math.min(100, Math.round((usage.minutes.plan_used / allowance) * 100)) : 0;
   const engine = apiUnreachable ? { label: "OFFLINE", dot: "is-off" } : !health ? { label: "CHECKING", dot: "is-warn" } : setupProblem ? { label: "SETUP NEEDED", dot: "is-warn" } : { label: "ONLINE", dot: "" };
 
   return (
@@ -86,15 +86,15 @@ export default function DashboardPage() {
         </section>
 
         <div className="dash-side">
-          <section className="credits-card" aria-label="Usage credits">
-            <div className="credits-head"><span><Languages size={16} /></span>USAGE CREDITS</div>
+          <section className="credits-card" aria-label="Minutes left">
+            <div className="credits-head"><span><Languages size={16} /></span>MINUTES LEFT</div>
             <div className="credits-figure">
-              <strong>{usage ? usage.videos_this_month.toLocaleString() : "—"}</strong>
-              <span>of {videoLimit} video{videoLimit === 1 ? "" : "s"} used</span>
+              <strong>{usage ? usage.minutes.available.toLocaleString(undefined, { maximumFractionDigits: 1 }) : "—"}</strong>
+              <span>minutes · {usage ? `${usage.minutes.plan_used.toLocaleString(undefined, { maximumFractionDigits: 1 })} of ${allowance} used this month` : ""}</span>
             </div>
             <div className="credits-bar" role="progressbar" aria-valuenow={usedPercent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${usedPercent}%` }} /></div>
             <div className="credits-foot">
-              <span>{usedPercent}% of monthly limit{usage?.credits.length ? ` · +${usage.credits.length} credit${usage.credits.length === 1 ? "" : "s"}` : ""}</span>
+              <span>{usage ? `Renews ${new Date(usage.minutes.resets_at).toLocaleDateString(undefined, { day: "numeric", month: "short" })}` : ""}{usage && usage.minutes.topup_left > 0 ? ` · +${formatMinutes(usage.minutes.topup_left)} min extra` : ""}</span>
               <Link href="/billing">{usage?.tier === "free" ? "Upgrade Plan" : "Manage Plan"}</Link>
             </div>
           </section>
@@ -113,12 +113,12 @@ export default function DashboardPage() {
               ReelLingo supports Yoruba, Igbo, Hausa, Swahili, Amharic, Wolof, Lingala and more for dubbing.
             </div>
             <div className="notice-box is-warm">
-              <strong><Gift size={13} />Invite a creator, both get a free video</strong>
-              Share your referral link from <Link href="/settings#referral" className="link">Settings</Link>. When they finish their first dub, you each get a bonus credit.
+              <strong><Gift size={13} />Invite a creator, both get free minutes</strong>
+              Share your referral link from <Link href="/settings#referral" className="link">Settings</Link>. When they buy their first plan or minutes, you get free minutes and they get a welcome bonus.
             </div>
             <div className="notice-box is-neutral">
               <strong>Your plan limits</strong>
-              {usage ? `Videos up to ${usage.max_video_minutes} minute${usage.max_video_minutes === 1 ? "" : "s"} long, ${videoLimit} per month and ${usage.plan.max_targets} language${usage.plan.max_targets === 1 ? "" : "s"} per upload on the ${usage.plan.name} plan.${usage.plan.watermark ? " Exports carry a small ReelLingo watermark." : ""}` : "Loading your plan details…"}
+              {usage ? `Videos up to ${usage.max_video_minutes} minute${usage.max_video_minutes === 1 ? "" : "s"} long, ${usage.minutes.plan_allowance} minutes of dubbing a month and ${usage.plan.max_targets} language${usage.plan.max_targets === 1 ? "" : "s"} per upload on the ${usage.plan.name} plan.${usage.plan.watermark ? " Exports carry a small ReelLingo watermark." : ""}` : "Loading your plan details…"}
             </div>
           </section>
         </div>
