@@ -1,4 +1,5 @@
 import { config } from "./config.js";
+import { refundRun } from "./minutes.js";
 import { closeDatabase, dbTime, initializeDatabase, isPostgres, many, one, query, toBool } from "./db.js";
 
 export { closeDatabase, initializeDatabase };
@@ -34,7 +35,7 @@ export async function getJob(id) {
 
 const CREATE_FIELDS = [
   "user_id", "team_id", "batch_id", "depends_on", "source_language", "target_language", "voice_clone", "input_storage_path",
-  "source_url", "media_type", "options_json", "original_filename", "priority", "credit_id", "current_step",
+  "source_url", "media_type", "options_json", "original_filename", "priority", "credit_id", "current_step", "plan_code",
 ];
 
 function serialize(key, value) {
@@ -99,14 +100,14 @@ function monthStart() {
 }
 
 /**
- * Plan usage this calendar month. Failed jobs don't count, and neither do jobs paid for with a
- * pay-as-you-go credit. Deleted jobs still count, so deleting cannot reset the allowance.
+ * Videos and minutes processed this calendar month (for statistics; minutes are charged in minute_ledger).
+ * Failed jobs don't count; deleted jobs still do.
  */
 export async function getMonthlyUsage(userId, { teamId = null } = {}) {
   const scope = teamId ? "team_id = $1" : "user_id = $1 AND team_id IS NULL";
   const row = await one(
     `SELECT COUNT(*) AS videos, COALESCE(SUM(duration_seconds), 0) AS seconds FROM jobs
-     WHERE ${scope} AND status <> 'failed' AND credit_id IS NULL AND created_at >= $2`,
+     WHERE ${scope} AND status <> 'failed' AND created_at >= $2`,
     [teamId || userId, monthStart()],
   );
   return { videos: Number(row?.videos || 0), seconds: Number(row?.seconds || 0) };
@@ -144,11 +145,23 @@ export async function touchJob(id) {
  */
 export async function requeueStaleJobs({ staleMs = config.jobStaleMs, maxAttempts = config.maxJobAttempts } = {}) {
   const cutoff = dbTime(new Date(Date.now() - staleMs));
-  const failed = await query(
-    `UPDATE jobs SET status = 'failed', error_message = $1, updated_at = CURRENT_TIMESTAMP
-     WHERE status = 'processing' AND (heartbeat_at IS NULL OR heartbeat_at < $2) AND attempts >= $3`,
-    ["Processing was interrupted several times. Use Retry to try again.", cutoff, maxAttempts],
+  // Jobs that keep getting interrupted fail and give their minutes back.
+  const stuck = await many(
+    "SELECT * FROM jobs WHERE status = 'processing' AND (heartbeat_at IS NULL OR heartbeat_at < $1) AND attempts >= $2",
+    [cutoff, maxAttempts],
   );
+  let failedCount = 0;
+  for (const row of stuck) {
+    const result = await query(
+      "UPDATE jobs SET status = 'failed', error_message = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND status = 'processing'",
+      ["Processing was interrupted several times. Your minutes were returned; use Retry to try again.", row.id],
+    );
+    if (result.rowCount) {
+      failedCount += 1;
+      await refundRun(normalizeJob(row), { reason: "refund" }).catch(() => undefined);
+    }
+  }
+  const failed = { rowCount: failedCount };
   const requeued = await query(
     `UPDATE jobs SET status = 'queued', updated_at = CURRENT_TIMESTAMP
      WHERE status = 'processing' AND (heartbeat_at IS NULL OR heartbeat_at < $1)`,

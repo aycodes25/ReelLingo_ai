@@ -164,6 +164,7 @@ export async function jobOutput(job, { detail = true } = {}) {
     output_srt_download_url: await sign(srt, true),
     outputs: detail ? await Promise.all(outputs.map(async (output) => ({
       kind: output.kind, format: output.format || null, aspect: output.aspect || null, label: output.label,
+      start: output.start ?? null, end: output.end ?? null,
       url: await sign(output, false), download_url: await sign(output, true),
     }))) : [],
     input_video_url: detail && job.input_storage_path && !job.files_expired_at && ["done", "awaiting_review", "failed"].includes(job.status) ? await getSignedUrl(job.input_storage_path) : null,
@@ -177,7 +178,14 @@ export async function jobOutput(job, { detail = true } = {}) {
       review: Boolean(options.review), keep_background: options.keep_background !== false, multi_speaker: Boolean(options.multi_speaker),
       tone: options.tone || "natural", captions: options.captions || null, formats: options.formats || [], lip_sync: Boolean(options.lip_sync),
       watermark: Boolean(options.watermark), voice_id: options.voice_id || null, trim_seconds: options.trim_seconds || null,
+      mode: options.mode || "dub", human_review: Boolean(options.human_review), nigerian_voice: options.nigerian_voice || null,
     },
+    // Minutes this run of the project uses (re-dubs and clips are separate runs).
+    minutes_charged: options.charge?.minutes ?? null,
+    clips_pending: options.task === "clips",
+    youtube_languages: Array.isArray(options.youtube_languages) ? options.youtube_languages : [],
+    human_reviewed_at: options.human_reviewed_at || null,
+    review_note: options.review_note || null,
     review_state: job.review_state || null,
     redub_count: Number(job.redub_count || 0),
     max_redubs: config.maxRedubs,

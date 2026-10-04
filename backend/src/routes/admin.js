@@ -1,16 +1,23 @@
 import express from "express";
-import { grantCredit } from "../accounts.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { activateSubscription } from "../billing.js";
 import { jobCosts } from "../costs.js";
 import { getJob, updateJob } from "../database.js";
 import { dbTime, many } from "../db.js";
 import { asyncRoute, authenticate, HttpError, jobOutput, requireAdmin, toIsoTimestamp } from "../http.js";
 import {
-  createUser, deleteTeam, deleteUser, emailUser, grantCredits, listAllPayments, listAllTeams, listUsers, revokeCredit, syncAuthUsers, updateUser, userDetail,
+  adjustMinutes, createUser, deleteTeam, deleteUser, emailUser, listAllPayments, listAllTeams, listUsers, syncAuthUsers, updateUser, userDetail,
 } from "../admin.js";
 import { config } from "../config.js";
 import { purgeJob } from "../jobfiles.js";
-import { createPlan, deletePlan, getPlan, listRawPlans, PERMISSIONS, updatePlan } from "../plans.js";
+import { ensureCharged, freeTierStatus, NotEnoughMinutes } from "../minutes.js";
+import { applyRecommendedPricing, createPlan, DEFAULT_PACKS, deletePlan, getPlan, listPacks, listRawPlans, PERMISSIONS, savePacks, updatePlan } from "../plans.js";
+import { profitReport } from "../profit.js";
+import { adminReviewOverview, markReviewerPaid, setReviewer } from "../reviews.js";
+import { createVoiceSample, listVoiceTests, rateVoiceTest, voiceLabOptions } from "../voicelab.js";
+import { planFor } from "../accounts.js";
 import { listSettings, updateSettings } from "../settings.js";
 import {
   BUDGET_UNITS, clearUsageCache, dailyUsage, deleteProviderBudget, providerSummaries, setProviderBudget, setUserBudget, usageByUser, userUsageDetail,
@@ -120,14 +127,26 @@ router.get("/admin/jobs", asyncRoute(async (request, response) => {
 router.post("/admin/jobs/:jobId/retry", asyncRoute(async (request, response) => {
   const job = await getJob(Number(request.params.jobId));
   if (!job) throw new HttpError(404, "Job not found.");
+  // The failed attempt refunded its minutes; an admin retry charges them again (even if it takes the balance below zero).
+  if (job.status === "failed") {
+    const plan = await planFor({ userId: job.user_id, teamId: job.team_id });
+    try {
+      await ensureCharged(job, { billingId: plan.billingId, allowance: plan.plan.minutes_per_month, periodEnd: plan.periodEnd, force: true });
+    } catch (error) {
+      if (!(error instanceof NotEnoughMinutes)) throw error;
+    }
+  }
   response.json(await jobOutput(await updateJob(job.id, { status: "queued", current_step: "queued", attempts: 0, error_message: null })));
 }));
 
-router.post("/admin/credits", asyncRoute(async (request, response) => {
+router.post("/admin/minutes", asyncRoute(async (request, response) => {
   const billingId = String(request.body?.billing_id || "").trim();
-  const minutes = Number(request.body?.max_minutes);
-  if (!billingId || !Number.isInteger(minutes) || minutes <= 0) throw new HttpError(400, "Provide billing_id and a whole number of max_minutes.");
-  response.status(201).json(await grantCredit(billingId, minutes, "admin", `admin:${request.userId}`));
+  if (!billingId) throw new HttpError(400, "Provide billing_id and minutes.");
+  try {
+    response.status(201).json({ added: await adjustMinutes(billingId, request.body?.minutes, request.body?.note, request.userId) });
+  } catch (error) {
+    throw new HttpError(400, error.message);
+  }
 }));
 
 router.post("/admin/subscriptions", asyncRoute(async (request, response) => {
@@ -186,14 +205,14 @@ router.delete("/admin/users/:userId", action(async (request, response) => {
   response.json(await deleteUser(String(request.params.userId), request.user));
 }));
 
-router.post("/admin/users/:userId/credits", action(async (request, response) => {
-  await grantCredits(String(request.params.userId), request.body?.max_minutes, request.body?.count);
+router.post("/admin/users/:userId/minutes", action(async (request, response) => {
+  await adjustMinutes(String(request.params.userId), request.body?.minutes, request.body?.note, request.userId);
   response.status(201).json(await userDetail(String(request.params.userId)));
 }));
 
-router.delete("/admin/credits/:creditId", action(async (request, response) => {
-  await revokeCredit(Number(request.params.creditId));
-  response.status(204).end();
+router.put("/admin/users/:userId/reviewer", action(async (request, response) => {
+  await setReviewer(String(request.params.userId), { isReviewer: Boolean(request.body?.is_reviewer), languages: Array.isArray(request.body?.languages) ? request.body.languages : [] });
+  response.json(await userDetail(String(request.params.userId)));
 }));
 
 router.post("/admin/users/:userId/email", action(async (request, response) => {
@@ -221,6 +240,52 @@ router.put("/admin/plans/:code", action(async (request, response) => {
 
 router.delete("/admin/plans/:code", action(async (request, response) => {
   response.json(await deletePlan(String(request.params.code), String(request.query.move_to || "free")));
+}));
+
+/** Profit check: every plan and pack, at worst-case and typical usage, from the provider prices in Settings. */
+router.get("/admin/profit", action(async (_request, response) => {
+  response.json({ ...(await profitReport()), free_tier: await freeTierStatus() });
+}));
+
+/** Writes the profit-checked prices and minutes onto the live plans and packs. */
+router.post("/admin/plans/apply-recommended", action(async (request, response) => {
+  const changed = await applyRecommendedPricing({ includeText: Boolean(request.body?.include_text) });
+  response.json({ changed, report: await profitReport() });
+}));
+
+router.get("/admin/packs", action(async (_request, response) => {
+  response.json({ packs: await listPacks(), defaults: DEFAULT_PACKS });
+}));
+
+router.put("/admin/packs", action(async (request, response) => {
+  response.json({ packs: await savePacks(request.body?.packs, request.userId) });
+}));
+
+// ---------- Human reviewers ----------
+router.get("/admin/reviews", action(async (_request, response) => {
+  response.json(await adminReviewOverview());
+}));
+
+router.post("/admin/reviewers/:userId/paid", action(async (request, response) => {
+  response.json(await markReviewerPaid(String(request.params.userId)));
+}));
+
+// ---------- Voice Lab: listen to each voice before customers do ----------
+router.get("/admin/voice-lab", action(async (_request, response) => {
+  response.json({ ...voiceLabOptions(), tests: await listVoiceTests() });
+}));
+
+router.post("/admin/voice-lab/samples", action(async (request, response) => {
+  const directory = await mkdtemp(join(tmpdir(), "reellingo-voicelab-"));
+  try {
+    response.status(201).json(await createVoiceSample(request.body || {}, request.userId, directory));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}));
+
+router.put("/admin/voice-lab/:id", action(async (request, response) => {
+  response.json(await rateVoiceTest(Number(request.params.id), request.body || {}));
 }));
 
 // ---------- Settings ----------

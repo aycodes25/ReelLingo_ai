@@ -1,12 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { ArrowRight, CircleAlert, CircleCheck, LoaderCircle, Mic, Play, RefreshCw, Save, Search } from "lucide-react";
+import { ArrowRight, CircleAlert, CircleCheck, LoaderCircle, Mic, Play, RefreshCw, Save, Search, UserCheck } from "lucide-react";
 import AppShell from "@/components/AppShell";
-import { approveJob, getJob, getLanguages, redubJob, retranslateSegment, updateSegments } from "@/lib/api";
-import { languageName, projectFileName, sourceLabel, timestamp } from "@/lib/format";
+import { approveJob, getJob, getLanguages, getRedubCost, redubJob, retranslateSegment, submitReview, updateSegments } from "@/lib/api";
+import { formatMinutes, languageName, projectFileName, sourceLabel, timestamp } from "@/lib/format";
 import type { Job, LanguageOption } from "@/lib/types";
 
 interface Draft {
@@ -21,6 +21,11 @@ interface Draft {
 export default function EditTranslationPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
+  const search = useSearchParams();
+  // Native-speaker reviewers open this page from /review with ?task=<id>.
+  const taskId = Number(search.get("task")) || null;
+  const [reviewNotes, setReviewNotes] = useState("");
+  const [redubCost, setRedubCost] = useState<number | null>(null);
   const jobId = Number(params.id);
   const [job, setJob] = useState<Job | null>(null);
   const [languages, setLanguages] = useState<LanguageOption[]>([]);
@@ -45,7 +50,16 @@ export default function EditTranslationPage() {
   )), [drafts, job]);
   const changedCount = changed.filter(Boolean).length;
   const needle = filter.trim().toLowerCase();
-  const reviewing = job?.status === "awaiting_review";
+  const withReviewer = job?.status === "awaiting_review" && job.review_state === "human_pending";
+  const reviewerMode = Boolean(taskId) && withReviewer;
+  const reviewing = job?.status === "awaiting_review" && !withReviewer;
+  const subtitlesOnly = job?.options.mode === "subtitles";
+
+  // What a re-dub would use with the edits saved so far (only edited lines get a new voice).
+  useEffect(() => {
+    if (!job || job.status !== "done" || subtitlesOnly) return;
+    getRedubCost(job.id).then((result) => setRedubCost(result.minutes)).catch(() => setRedubCost(null));
+  }, [job, subtitlesOnly]);
   const target = job ? languageName(languages, job.target_language) : "";
   const speakerLabel = (speaker?: string) => job?.speakers?.find((item) => item.id === speaker)?.label || null;
   const previewUrl = job?.input_video_url || job?.output_video_url || null;
@@ -98,6 +112,11 @@ export default function EditTranslationPage() {
     if (!job || !(await save())) return;
     setSaving(true);
     try {
+      if (reviewerMode && taskId) {
+        await submitReview(taskId, reviewNotes);
+        router.push("/review?submitted=1");
+        return;
+      }
       if (reviewing) await approveJob(job.id);
       else await redubJob(job.id);
       router.push(`/jobs/${job.id}`);
@@ -129,25 +148,38 @@ export default function EditTranslationPage() {
     );
   }
 
-  const editableNow = ["awaiting_review", "done", "failed"].includes(job.status) && !job.files_expired;
+  const editableNow = ["awaiting_review", "done", "failed"].includes(job.status) && !job.files_expired && (!withReviewer || reviewerMode);
+  const actionLabel = reviewerMode ? "Submit review" : reviewing ? (subtitlesOnly ? "Approve & make subtitles" : "Approve & generate voice") : subtitlesOnly ? "Update subtitles" : "Re-dub";
   const redubsLeft = job.max_redubs - job.redub_count;
 
   return (
     <AppShell crumbs={crumbs}>
       <div className="page-head">
         <div>
-          <h1>{reviewing ? "Review the translation" : "Edit & re-dub"}</h1>
-          <p>{sourceLabel(job, languages)} → {target} · {drafts.length} lines. {reviewing ? "Nothing has been voiced yet, so edits are free." : "Only the lines you change get a new voice recording."}</p>
+          <h1>{reviewerMode ? "Native-speaker review" : reviewing ? "Review the translation" : subtitlesOnly ? "Edit subtitles" : "Edit & re-dub"}</h1>
+          <p>
+            {sourceLabel(job, languages)} → {target} · {drafts.length} lines.{" "}
+            {reviewerMode ? "Correct the transcript and the translation line by line: names, slang, tone and spelling (with tone marks). Then submit."
+              : reviewing ? "Nothing has been voiced yet, so edits are free."
+                : subtitlesOnly ? "Fix any line, then update the subtitle files."
+                  : `Only the lines you change get a new voice recording${redubCost !== null ? `: a re-dub with your saved edits uses ${formatMinutes(redubCost)}` : ""}.`}
+          </p>
         </div>
         <div className="page-head-actions">
           <button type="button" className="btn btn-outline" onClick={() => void save()} disabled={!changedCount || saving || !editableNow}><Save size={16} />Save{changedCount ? ` (${changedCount})` : ""}</button>
-          <button type="button" className="btn btn-primary" onClick={finish} disabled={saving || !editableNow || (!reviewing && (job.status !== "done" || redubsLeft <= 0))}>
-            <Mic size={16} />{reviewing ? "Approve & generate voice" : `Re-dub${redubsLeft > 0 ? ` (${redubsLeft} left)` : ""}`}<ArrowRight size={16} />
+          <button type="button" className="btn btn-primary" onClick={finish} disabled={saving || !editableNow || (!reviewing && !reviewerMode && (job.status !== "done" || redubsLeft <= 0))}>
+            {reviewerMode ? <UserCheck size={16} /> : <Mic size={16} />}{actionLabel}{!reviewing && !reviewerMode && redubsLeft > 0 ? ` (${redubsLeft} left)` : ""}<ArrowRight size={16} />
           </button>
         </div>
       </div>
 
-      {!editableNow && <div className="alert alert-warn" style={{ marginBottom: 20 }}><CircleAlert size={16} /><span>{job.files_expired ? "This project's files have expired, so it can't be re-dubbed." : "Wait for processing to finish before editing."}</span></div>}
+      {!editableNow && <div className="alert alert-warn" style={{ marginBottom: 20 }}><CircleAlert size={16} /><span>{job.files_expired ? "This project's files have expired, so it can't be re-dubbed." : withReviewer ? "A native-speaker reviewer is checking this translation. You can edit it once they're done." : "Wait for processing to finish before editing."}</span></div>}
+      {reviewerMode && (
+        <div className="card card-pad" style={{ marginBottom: 20 }}>
+          <label className="field-label" htmlFor="review-notes">Notes for the creator (optional)</label>
+          <textarea id="review-notes" className="input input-plain" rows={2} value={reviewNotes} onChange={(event) => setReviewNotes(event.target.value)} placeholder="e.g. Corrected the spelling of the church's name; made the greeting more natural." />
+        </div>
+      )}
       {message && <div role={message.tone === "error" ? "alert" : "status"} className={`alert ${message.tone === "error" ? "alert-error" : "alert-success"}`} style={{ marginBottom: 20 }}>{message.tone === "error" ? <CircleAlert size={16} /> : <CircleCheck size={16} />}<span>{message.text}</span></div>}
 
       <div className="editor-layout">

@@ -14,7 +14,7 @@ const STATUS_LABEL: Record<Job["status"], string> = {
 
 export function projectHref(job: Job) {
   if (job.status === "done") return `/result/${job.id}`;
-  if (job.status === "awaiting_review") return `/jobs/${job.id}/edit`;
+  if (job.status === "awaiting_review" && job.review_state !== "human_pending") return `/jobs/${job.id}/edit`;
   return `/jobs/${job.id}`;
 }
 
@@ -58,7 +58,7 @@ export default function ProjectRow({ job, languages, onRemoved }: { job: Job; la
       <div className="project-info">
         <div className="project-name">
           <Link href={projectHref(job)}>{projectFileName(job)}</Link>
-          <span className={`badge badge-${job.status}`}>{STATUS_LABEL[job.status]}</span>
+          <span className={`badge badge-${job.status}`}>{(job.status === "awaiting_review" && job.review_state === "human_pending" ? "With reviewer" : STATUS_LABEL[job.status])}</span>
           {job.files_expired && <span className="badge badge-soft">Files expired</span>}
         </div>
         <div className="project-meta">
@@ -70,7 +70,7 @@ export default function ProjectRow({ job, languages, onRemoved }: { job: Job; la
       </div>
       <div className="project-actions">
         {job.status === "done" && <Link href={projectHref(job)} className="btn btn-outline btn-sm">View Result</Link>}
-        {job.status === "awaiting_review" && <Link href={projectHref(job)} className="btn btn-primary btn-sm"><PencilLine size={15} />Review</Link>}
+        {job.status === "awaiting_review" && job.review_state !== "human_pending" && <Link href={projectHref(job)} className="btn btn-primary btn-sm"><PencilLine size={15} />Review</Link>}
         {inFlight && (
           <div className="row-progress" aria-label={`Progress ${percent}%`}>
             <div><span>PROGRESS</span><span>{percent}%</span></div>
@@ -81,7 +81,7 @@ export default function ProjectRow({ job, languages, onRemoved }: { job: Job; la
         <details className="row-menu">
           <summary className="icon-btn" aria-label={`More actions for ${projectFileName(job)}`}><Ellipsis size={20} /></summary>
           <div className="row-menu-list">
-            <Link href={projectHref(job)}><ExternalLink size={15} />{job.status === "done" ? "Open result" : job.status === "awaiting_review" ? "Review translation" : "View progress"}</Link>
+            <Link href={projectHref(job)}><ExternalLink size={15} />{job.status === "done" ? "Open result" : job.status === "awaiting_review" && job.review_state !== "human_pending" ? "Review translation" : "View progress"}</Link>
             {job.output_video_download_url && <a href={job.output_video_download_url} download><Download size={15} />Download {job.media_type === "audio" ? "audio" : "video"}</a>}
             {job.output_srt_download_url && <a href={job.output_srt_download_url} download><Download size={15} />Download subtitles</a>}
             {job.status !== "processing" && <button type="button" className="is-danger" onClick={handleDelete} disabled={busy}><Trash2 size={15} />Delete project</button>}

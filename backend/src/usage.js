@@ -13,6 +13,7 @@ export const PROVIDERS = [
   { id: "elevenlabs", label: "ElevenLabs", purpose: "Voice cloning, dubbing, multi-speaker transcription", unit: "characters", configured: () => Boolean(config.elevenlabsApiKey) },
   { id: "openai", label: "OpenAI", purpose: "Transcription, translation, titles & hashtags", unit: "usd", configured: () => Boolean(config.openaiApiKey) },
   { id: "sync", label: "sync.so", purpose: "Lip-sync", unit: "usd", configured: () => Boolean(config.syncApiKey) },
+  { id: "spitch", label: "Spitch", purpose: "Nigerian voices, translation & Yoruba tone marks", unit: "usd", configured: () => Boolean(config.spitchApiKey) },
   { id: "resend", label: "Resend", purpose: "Email notifications", unit: "emails", configured: () => Boolean(config.resendApiKey), freeTier: { amount: 3000, unit: "emails" } },
   { id: "whatsapp", label: "WhatsApp", purpose: "WhatsApp notifications", unit: "messages", configured: () => Boolean(config.whatsappToken && config.whatsappPhoneNumberId) },
   { id: "storage", label: "Storage", purpose: "Uploaded and dubbed video files", unit: "gb", configured: () => true },

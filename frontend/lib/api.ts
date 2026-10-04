@@ -1,6 +1,7 @@
 import type {
-  ApiHealth, ApiKey, BillingInfo, CreateJobOptions, CreditPack, GlossaryTerm, Job, LanguageOption, Me, Plan,
-  SavedVoice, SessionUser, TeamDetail, TeamMember, TeamSummary, TranscriptSegment, Usage, WatchData,
+  ApiHealth, ApiKey, BillingInfo, CreateJobOptions, CreditPack, GlossaryTerm, Job, LanguageOption, Me, MinuteBalance, MinuteLedgerEntry,
+  MinuteWeights, Plan, ReviewerHome, ReviewTask, SavedVoice, SessionUser, TeamDetail, TeamMember, TeamSummary, TranscriptSegment, Usage,
+  WatchData, YoutubeLanguageResult, YoutubeVideo,
 } from "./types";
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -310,13 +311,19 @@ export async function uploadResumable(file: File, onProgress: (fraction: number)
   });
 }
 
-export function createJob(source: { uploadId?: string; sourceUrl?: string }, options: CreateJobOptions): Promise<Job> {
+export function createJob(source: { uploadId?: string; sourceUrl?: string; youtubeVideoId?: string }, options: CreateJobOptions): Promise<Job> {
   return request<Job>("/jobs", {
     method: "POST",
     context: "Failed to create job",
     json: {
       upload_id: source.uploadId,
       source_url: source.sourceUrl,
+      youtube_video_id: source.youtubeVideoId,
+      mode: options.mode,
+      human_review: options.humanReview,
+      nigerian_voice: options.nigerianVoice || undefined,
+      rights_confirmed: options.rightsConfirmed,
+      voice_consent: options.voiceConsent,
       source_language: options.sourceLanguage,
       target_languages: options.targetLanguages.join(","),
       voice_mode: options.voiceMode,
@@ -417,7 +424,7 @@ export async function getApiHealth(): Promise<ApiHealth> {
   return request<ApiHealth>("/health", { auth: false, context: "Could not check API status" });
 }
 
-export function getPlans(): Promise<{ plans: Plan[]; packs: CreditPack[]; providers: { paystack: boolean; stripe: boolean } }> {
+export function getPlans(): Promise<{ plans: Plan[]; packs: CreditPack[]; providers: { paystack: boolean; stripe: boolean }; yearly?: boolean; weights?: MinuteWeights }> {
   return request("/plans", { auth: false, context: "Could not load plans" });
 }
 
@@ -430,7 +437,7 @@ export function getBilling(): Promise<BillingInfo> {
   return request<BillingInfo>("/billing", { context: "Could not load billing" });
 }
 
-export function startCheckout(provider: "paystack" | "stripe", choice: { plan?: string; pack?: string; auto_renew?: boolean }): Promise<{ url: string; reference: string }> {
+export function startCheckout(provider: "paystack" | "stripe", choice: { plan?: string; pack?: string; auto_renew?: boolean; cycle?: "monthly" | "yearly" }): Promise<{ url: string; reference: string }> {
   return request("/billing/checkout", { method: "POST", json: { provider, ...choice }, context: "Could not start checkout" });
 }
 
@@ -530,6 +537,65 @@ export function setTeamMemberRole(id: number, memberId: number, role: string): P
 
 export function removeTeamMember(id: number, memberId: number): Promise<TeamMember[]> {
   return request(`/teams/${id}/members/${memberId}`, { method: "DELETE", workspace: false, context: "Could not remove the member" });
+}
+
+// ---------- Minutes ----------
+export function getMinutesHistory(): Promise<{ minutes: MinuteBalance; history: MinuteLedgerEntry[] }> {
+  return request("/usage/minutes", { context: "Could not load your minutes" });
+}
+
+export function getRedubCost(jobId: number): Promise<{ minutes: number }> {
+  return request(`/jobs/${jobId}/redub-cost`, { context: "Could not work out the re-dub cost" });
+}
+
+// ---------- Short clips and YouTube languages ----------
+export function requestClips(jobId: number): Promise<Job> {
+  return request<Job>(`/jobs/${jobId}/clips`, { method: "POST", context: "Could not start the clips" });
+}
+
+export function getYoutubeVideos(page = ""): Promise<{ videos: YoutubeVideo[]; next_page: string | null; channel: string }> {
+  return request(`/integrations/youtube/videos${page ? `?page=${encodeURIComponent(page)}` : ""}`, { context: "Could not load your YouTube videos" });
+}
+
+export function addLanguageToYoutube(jobId: number, videoId: string, details: { title?: string; description?: string } = {}): Promise<YoutubeLanguageResult> {
+  return request(`/jobs/${jobId}/youtube-language`, { method: "POST", json: { video_id: videoId, ...details }, context: "Could not add this language on YouTube" });
+}
+
+// ---------- Legal and privacy ----------
+export function acceptTerms(): Promise<{ accepted_version: string }> {
+  return request("/me/terms", { method: "POST", context: "Could not save your answer" });
+}
+
+export async function downloadMyData(): Promise<void> {
+  const response = await fetch(`${API_URL}/me/export`, { headers: await authHeaders(false) });
+  if (!response.ok) throw new ApiError("Could not download your data.", response.status);
+  const blob = await response.blob();
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `reellingo-data-${new Date().toISOString().slice(0, 10)}.json`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+export function deleteMyAccount(): Promise<{ deleted: boolean }> {
+  return request("/me", { method: "DELETE", json: { confirm: "DELETE" }, context: "Could not delete your account" });
+}
+
+// ---------- Human reviewers ----------
+export function getReviewerHome(): Promise<ReviewerHome> {
+  return request<ReviewerHome>("/reviews", { context: "Could not load reviews" });
+}
+
+export function claimReview(taskId: number): Promise<ReviewTask> {
+  return request<ReviewTask>(`/reviews/${taskId}/claim`, { method: "POST", context: "Could not pick up this review" });
+}
+
+export function releaseReview(taskId: number): Promise<{ released: boolean }> {
+  return request(`/reviews/${taskId}/release`, { method: "POST", context: "Could not hand this review back" });
+}
+
+export function submitReview(taskId: number, notes: string): Promise<ReviewTask> {
+  return request<ReviewTask>(`/reviews/${taskId}/submit`, { method: "POST", json: { notes }, context: "Could not submit the review" });
 }
 
 export type { TranscriptSegment };

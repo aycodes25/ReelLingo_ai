@@ -41,6 +41,7 @@ const openaiServer = createServer((request, response) => {
       const user = payload.messages[1].content;
       let content;
       if (system.includes("social video metadata")) content = { title: "Welcome to Lagos", description: "A warm greeting.", hashtags: ["lagos", "#naija"] };
+      else if (system.includes("short social-media clips")) content = { clips: [{ start_index: 0, end_index: 2, title: "The best bit" }, { start_index: 5, end_index: 5, title: "Too short" }] };
       else if (system.includes("Identify the language")) content = { segments: JSON.parse(user).map((item) => ({ index: item.index, language: "yo" })) };
       else content = { segments: JSON.parse(user).map((item) => ({ index: item.index, text: `EN ${item.text}` })) };
       response.end(JSON.stringify({ id: "x", object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: JSON.stringify(content) }, finish_reason: "stop" }], usage: { prompt_tokens: 100, completion_tokens: 20 } }));
@@ -64,6 +65,7 @@ Object.assign(process.env, {
   OPENAI_BASE_URL: `http://127.0.0.1:${openaiServer.address().port}/v1`,
   ELEVENLABS_API_KEY: "test-elevenlabs",
   ELEVENLABS_FALLBACK_VOICE_ID: "stock-voice",
+  SPITCH_API_KEY: "test-spitch",
   SEPARATION_PROVIDER: "ffmpeg",
   SUPABASE_URL: "",
   SUPABASE_KEY: "",
@@ -75,9 +77,26 @@ Object.assign(process.env, {
 
 // ElevenLabs goes through global fetch.
 const eleven = { tts: [], clones: 0, deletes: 0, scribe: 0 };
+// Spitch (native Nigerian voices, translation and Yoruba tone marks) goes through global fetch too.
+const spitch = { speech: [], translate: [], diacritics: [] };
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (url, options = {}) => {
   const href = String(url);
+  if (href.startsWith("https://api.spitch.app/v1/")) {
+    const body = JSON.parse(options.body);
+    if (href.endsWith("/speech")) {
+      spitch.speech.push(body);
+      return new Response(toneBytes, { status: 200, headers: { "Content-Type": "audio/mpeg" } });
+    }
+    if (href.endsWith("/translate")) {
+      spitch.translate.push(body);
+      return Response.json({ request_id: "t", text: body.text === "Bawo ni" ? "Bawo ni" : "E kaabo" });
+    }
+    if (href.endsWith("/diacritics")) {
+      spitch.diacritics.push(body);
+      return Response.json({ request_id: "d", text: body.text.replace("Bawo", "Báwo").replace("E kaabo", "Ẹ káàbọ̀") });
+    }
+  }
   if (!href.startsWith("https://api.elevenlabs.io")) return realFetch(url, options);
   if (href.endsWith("/v1/models")) return Response.json([{ model_id: "eleven_v4", languages: [{ language_id: "en" }] }]);
   if (href.endsWith("/v1/user/subscription")) return Response.json({ character_count: 0, character_limit: 100000 });
@@ -197,11 +216,101 @@ test("multi-speaker videos are diarized and each speaker gets their own voice", 
   const input = await storedVideo("interview.mp4");
   eleven.tts = [];
   const clonesBefore = eleven.clones;
+  const scribeBefore = eleven.scribe;
   let job = await database.createJob({ user_id: "creator", source_language: "yo", target_language: "en", voice_clone: true, input_storage_path: input, options_json: { multi_speaker: true, keep_background: false } });
   job = await runJob(job);
   assert.equal(job.status, "done", job.error_message);
-  assert.equal(eleven.scribe, 1);
+  assert.equal(eleven.scribe - scribeBefore, 1);
   assert.deepEqual(job.speakers_json.map((speaker) => speaker.id), ["speaker_0", "speaker_1"]);
   assert.equal(eleven.clones - clonesBefore, 0, "speakers under 4 seconds use distinct stock voices instead of clones");
   assert.equal(new Set(eleven.tts.map((call) => call.voice)).size, 2);
+});
+
+test("subtitles-only projects make subtitle files and a captioned copy, with no voice at all", async () => {
+  const input = await storedVideo("subtitles.mp4");
+  eleven.tts = [];
+  let job = await database.createJob({ user_id: "creator", source_language: "yo", target_language: "en", voice_clone: false, input_storage_path: input, options_json: { mode: "subtitles", captions: "boxed" } });
+  job = await runJob(job);
+  assert.equal(job.status, "done", job.error_message);
+  assert.equal(eleven.tts.length, 0, "no voice is generated");
+  const kinds = job.outputs_json.map((output) => output.format || output.kind);
+  for (const kind of ["srt", "vtt", "srt-original", "ass", "captioned"]) assert.ok(kinds.includes(kind), `missing ${kind}`);
+  const captioned = job.outputs_json.find((output) => output.kind === "captioned");
+  const info = await getMediaInfo(localPath(captioned.path));
+  assert.ok(info.streams.some((stream) => stream.codec_type === "audio"), "the original audio is kept");
+});
+
+test("Yoruba dubs use Spitch's native voices, Spitch translation and Yoruba tone marks", async () => {
+  const input = await storedVideo("yoruba.mp4");
+  eleven.tts = [];
+  spitch.speech = [];
+  let job = await database.createJob({ user_id: "creator", source_language: "en", target_language: "yo", voice_clone: false, input_storage_path: input, options_json: { keep_background: false, nigerian_voice: "sade" } });
+  job = await runJob(job);
+  assert.equal(job.status, "done", job.error_message);
+  assert.equal(eleven.tts.length, 0, "ElevenLabs isn't used for a native Yoruba voice");
+  assert.ok(spitch.translate.every((call) => call.target === "yo"));
+  assert.deepEqual(job.translated_segments_json.map((segment) => segment.text), ["Báwo ni", "Ẹ káàbọ̀"], "tone marks are restored");
+  assert.deepEqual(spitch.speech.map((call) => call.text), ["Báwo ni", "Ẹ káàbọ̀"]);
+  assert.ok(spitch.speech.every((call) => call.voice === "sade" && call.language === "yo"), "the creator's chosen voice");
+  const costs = await jobCosts(job.id);
+  assert.ok(costs.items.some((item) => item.provider === "spitch" && item.operation === "speech"));
+});
+
+test("a cloned voice for a Yoruba dub still uses ElevenLabs (Spitch voices are stock voices)", async () => {
+  const input = await storedVideo("yoruba-clone.mp4");
+  eleven.tts = [];
+  spitch.speech = [];
+  const job = await runJob(await database.createJob({ user_id: "creator", source_language: "en", target_language: "yo", voice_clone: true, input_storage_path: input, options_json: { keep_background: false } }));
+  assert.equal(job.status, "done", job.error_message);
+  assert.equal(spitch.speech.length, 0);
+  assert.equal(eleven.tts.length, 2);
+});
+
+test("human review pauses for a native speaker, then the job continues once they submit", async () => {
+  const { query } = await import("../src/db.js");
+  const reviews = await import("../src/reviews.js");
+  const input = await storedVideo("reviewed.mp4");
+  let job = await runJob(await database.createJob({ user_id: "creator", source_language: "yo", target_language: "en", voice_clone: false, input_storage_path: input, options_json: { human_review: true, keep_background: false } }));
+  assert.equal(job.status, "awaiting_review");
+  assert.equal(job.review_state, "human_pending");
+  assert.equal(job.output_video_path, null);
+  await query("INSERT INTO profiles (user_id, email, referral_code, is_reviewer, reviewer_languages) VALUES ('rev', 'rev@example.com', 'REV0001', $1, 'en')", [true]);
+  const reviewer = await reviews.reviewerProfile("rev");
+  const { open } = await reviews.tasksForReviewer(reviewer);
+  const task = open.find((item) => item.job_id === job.id);
+  assert.ok(task, "the task is offered to English reviewers");
+  assert.equal(task.payout_ngn, Math.round(task.minutes * 300));
+  await reviews.claimTask(task.id, reviewer);
+  assert.equal(await reviews.isReviewingJob("rev", job.id), true);
+  await reviews.submitTask(task.id, reviewer, "Fixed a name");
+  job = await database.getJob(job.id);
+  assert.equal(job.status, "queued");
+  assert.equal(job.review_state, "approved");
+  job = await runJob(job);
+  assert.equal(job.status, "done", job.error_message);
+  assert.equal((await reviews.reviewerEarnings("rev")).owed_ngn, task.payout_ngn);
+  assert.equal((await reviews.markReviewerPaid("rev")).tasks, 1);
+  assert.equal((await reviews.reviewerEarnings("rev")).paid_ngn, task.payout_ngn);
+});
+
+test("short clips are cut from a finished dub as captioned vertical videos", async () => {
+  const path = join(dir, "long.mp4");
+  await run("ffmpeg", ["-y", "-f", "lavfi", "-i", "color=c=orange:s=320x240:d=60:r=24", "-f", "lavfi", "-i", "sine=frequency=500:duration=60", "-shortest", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", path]);
+  await uploadFile("jobs/long/output.mp4", path);
+  const segments = Array.from({ length: 6 }, (_, index) => ({ start: index * 10, end: index * 10 + 9.5, text: `Line ${index + 1} of the talk` }));
+  let job = await database.createJob({ user_id: "creator", source_language: "yo", target_language: "en", input_storage_path: "", options_json: { task: "clips", captions: "bold" } });
+  job = await database.updateJob(job.id, {
+    status: "processing", duration_seconds: 60, translated_segments_json: segments, outputs_json: [{ kind: "video", label: "Dubbed video (MP4)", path: "jobs/long/output.mp4" }],
+  });
+  job = await runJob(job);
+  assert.equal(job.status, "done", job.error_message || job.processing_note);
+  const clips = job.outputs_json.filter((output) => output.kind === "clip");
+  assert.equal(clips.length, 1, "clips shorter than 15 seconds are skipped");
+  assert.equal(clips[0].label, "Clip 1: The best bit");
+  assert.equal(clips[0].start, 0);
+  assert.equal(clips[0].end, 29.5);
+  assert.equal(job.options_json.task, undefined, "the clips task is cleared");
+  const video = (await getMediaInfo(localPath(clips[0].path))).streams.find((stream) => stream.codec_type === "video");
+  assert.ok(Number(video.height) > Number(video.width), "clips are vertical");
+  assert.ok(job.outputs_json.some((output) => output.kind === "video"), "the original dub is kept");
 });

@@ -8,6 +8,8 @@ import { pipeline } from "node:stream/promises";
 import { config } from "./config.js";
 import { commandAvailable, runCapture } from "./media.js";
 
+// Social sites can't be imported by link: their rules forbid downloading, and creators could dub videos they don't own.
+// YouTube videos are imported only from the creator's own connected channel (see youtube.js), as "youtube:<video id>".
 const SOCIAL_HOSTS = [
   "youtube.com", "youtu.be", "tiktok.com", "instagram.com", "facebook.com", "fb.watch", "fb.com", "x.com", "twitter.com", "vimeo.com",
 ];
@@ -16,16 +18,29 @@ function hostMatches(host, domain) {
   return host === domain || host.endsWith(`.${domain}`);
 }
 
+/** Internal source for a video from the creator's own (verified) YouTube channel. */
+export function ownYoutubeSource(videoId) {
+  return `youtube:${videoId}`;
+}
+
 export function classifyImportUrl(raw) {
+  const text = String(raw).trim();
+  const own = text.match(/^youtube:([\w-]{6,20})$/);
+  if (own) return { kind: "social", url: new URL(`https://www.youtube.com/watch?v=${own[1]}`), label: "your YouTube channel" };
   let url;
   try {
-    url = new URL(String(raw).trim());
+    url = new URL(text);
   } catch {
     throw new Error("Enter a valid link starting with https://");
   }
   if (!["http:", "https:"].includes(url.protocol)) throw new Error("Only http(s) links can be imported.");
   const host = url.hostname.toLowerCase();
-  if (SOCIAL_HOSTS.some((domain) => hostMatches(host, domain))) return { kind: "social", url };
+  if (["youtube.com", "youtu.be"].some((domain) => hostMatches(host, domain))) {
+    throw new Error("To import from YouTube, connect your channel (Settings → YouTube) and pick one of your own videos.");
+  }
+  if (SOCIAL_HOSTS.some((domain) => hostMatches(host, domain))) {
+    throw new Error("Links from TikTok, Instagram, Facebook, X and Vimeo can't be imported. Download your video from the app and upload the file instead.");
+  }
   if (hostMatches(host, "drive.google.com") || hostMatches(host, "docs.google.com")) {
     const id = url.pathname.match(/\/d\/([\w-]{10,})/)?.[1] || url.searchParams.get("id");
     if (!id) throw new Error("That Google Drive link doesn't include a file ID. Use the file's “Share” link.");
@@ -102,7 +117,7 @@ async function downloadDirect(startUrl, directory) {
 
 async function downloadSocial(url, directory) {
   if (!(await commandAvailable(config.ytDlpPath))) {
-    throw new Error("Importing from YouTube, TikTok, Instagram or Facebook needs yt-dlp installed on the server (set YTDLP_PATH).");
+    throw new Error("Importing from YouTube needs yt-dlp installed on the server (set YTDLP_PATH).");
   }
   const { stdout } = await runCapture(config.ytDlpPath, [
     "--no-playlist", "--no-progress", "--restrict-filenames",
