@@ -17,6 +17,7 @@ import { billingProviders } from "./src/billing.js";
 import { scannerConfigured } from "./src/scan.js";
 import { publicSettings, startSettingsRefresh, stopSettingsRefresh } from "./src/settings.js";
 import { localPath, STORAGE_LABELS, storageProvider, verifyLocalSignature } from "./src/storage.js";
+import { useSpitchVoice } from "./src/spitch.js";
 import { tusServer } from "./src/uploads.js";
 import { startWorker, stopWorker } from "./src/worker.js";
 import { youtubeConfigured } from "./src/youtube.js";
@@ -26,6 +27,7 @@ import authRoutes from "./src/routes/auth.js";
 import billingRoutes, { webhookRouter } from "./src/routes/billing.js";
 import jobRoutes from "./src/routes/jobs.js";
 import publicRoutes from "./src/routes/public.js";
+import reviewRoutes from "./src/routes/reviews.js";
 import teamRoutes from "./src/routes/teams.js";
 
 if (config.sentryDsn) {
@@ -88,6 +90,8 @@ app.get("/health", (_request, response) => {
       email: emailConfigured(),
       whatsapp: whatsappConfigured(),
       youtube: youtubeConfigured(),
+      // Native Yoruba, Hausa, Igbo and Pidgin voices (Spitch).
+      nativeVoices: useSpitchVoice("yo"),
       virusScan: scannerConfigured(),
       worker: config.workerMode,
       storage: STORAGE_LABELS[storageProvider()],
@@ -102,6 +106,7 @@ app.use(jobRoutes);
 app.use(accountRoutes);
 app.use(billingRoutes);
 app.use(teamRoutes);
+app.use(reviewRoutes);
 app.use(adminRoutes);
 
 app.use((_request, response) => {

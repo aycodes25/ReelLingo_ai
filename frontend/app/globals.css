@@ -188,7 +188,7 @@ img { max-width: 100%; }
 .plan > p { min-height: 40px; margin: 10px 0 28px; color: var(--muted); font-size: 13px; }
 .plan-price { display: flex; align-items: baseline; gap: 2px; margin-bottom: 30px; color: var(--ink); font-family: var(--font-display); font-size: 38px; font-weight: 600; line-height: 1; }
 .plan-price small { color: var(--muted); font-family: var(--font-body); font-size: 15px; font-weight: 400; }
-.plan .check-list { flex: 1; gap: 18px; margin-bottom: 36px; }
+.plan .check-list { flex: 1; align-content: start; gap: 14px; margin-bottom: 36px; }
 .plan .check-list li { font-size: 15px; }
 .plan .btn { min-height: 50px; letter-spacing: .02em; text-transform: uppercase; font-weight: 500; }
 .plan .btn-primary { font-weight: 600; }
@@ -823,8 +823,6 @@ pre code { padding: 0; color: inherit; background: none; }
 .current-plan-side { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .credit-count { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 99px; color: #0c7066; background: var(--teal-soft); font-size: 13px; font-weight: 600; }
 .app-pricing { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
-.pay-method { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 0 0 18px; color: var(--muted); font-size: 14px; }
-.pay-method .segmented { flex-wrap: wrap; }
 .plan-note { display: block; color: var(--muted); font-size: 13px; text-align: center; }
 .plan-local { margin: -8px 0 12px; color: var(--muted); font-size: 13px; }
 .section-block { margin-top: 44px; }
@@ -931,4 +929,92 @@ pre code { padding: 0; color: inherit; background: none; }
 
 @media (prefers-reduced-motion: reduce) {
 	*, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
+
+/* ---------- Minutes, consent and new project options ---------- */
+.project-mode { display: flex; flex-wrap: wrap; width: 100%; margin: 4px 0 18px; }
+.project-mode button { display: inline-flex; flex: 1 1 180px; align-items: center; justify-content: center; gap: 8px; min-height: 42px; }
+.project-mode button small { color: var(--faint); font-size: 11px; font-weight: 500; }
+.project-mode button.is-on small { color: var(--muted); }
+.consent-box { display: grid; gap: 10px; margin: 20px 0 6px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--white); }
+.consent-row { display: flex; align-items: flex-start; gap: 10px; color: var(--ink); font-size: 13.5px; line-height: 1.5; }
+.consent-row input { flex: none; width: 17px; height: 17px; margin-top: 2px; accent-color: var(--primary); }
+.minutes-estimate { margin: 12px 0 4px; padding: 10px 14px; border-radius: 10px; color: var(--ink); background: var(--lavender); font-size: 13.5px; }
+.minutes-estimate.is-short { color: #8a3a12; background: var(--coral-soft); }
+.yt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin: 8px 0 12px; }
+.yt-card { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--white); text-align: left; }
+.yt-card img, .yt-card .yt-thumb { display: block; width: 100%; aspect-ratio: 16 / 9; border-radius: 8px; object-fit: cover; background: var(--sand); }
+.yt-card strong { display: -webkit-box; overflow: hidden; color: var(--ink); font-size: 13px; line-height: 1.35; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.yt-card small { color: var(--muted); font-size: 12px; text-transform: capitalize; }
+.yt-card.is-on { border-color: var(--primary); box-shadow: 0 0 0 2px var(--lavender); }
+
+/* ---------- Billing: minutes ---------- */
+.minutes-meter { display: grid; gap: 8px; margin-top: 16px; max-width: 560px; }
+.minutes-meter-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
+.minutes-meter-head strong { color: var(--ink); font-family: var(--font-display); font-size: 22px; }
+.minutes-meter-head span { color: var(--muted); font-size: 13px; }
+.minutes-meter .progress-track { height: 8px; margin: 0; background: var(--lavender); }
+.minutes-meter .progress-track i { background: var(--primary); }
+.minutes-meter small { display: flex; align-items: flex-start; gap: 6px; color: var(--muted); font-size: 12.5px; }
+.minutes-meter small svg { flex: none; margin-top: 2px; }
+.pay-method { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 24px 0 18px; color: var(--muted); font-size: 14px; }
+.pay-method .segmented { flex-wrap: wrap; }
+.plan-saving { margin: -8px 0 12px; color: var(--teal); font-size: 13px; font-weight: 600; }
+.pack-unit { color: var(--muted); font-size: 12px; }
+.delta-in { color: var(--teal); font-weight: 600; }
+.delta-out { color: var(--ink); }
+
+/* ---------- Terms modal, privacy and reviewers ---------- */
+.modal-backdrop { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; padding: 16px; background: rgba(17, 12, 79, .45); }
+.modal-backdrop .modal { background: var(--white); }
+.modal-backdrop .modal h2 { margin-bottom: 10px; font-size: 20px; }
+.modal-backdrop .modal p { color: var(--text); font-size: 14px; }
+.modal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+details.danger-zone { margin-top: 18px; padding: 12px 14px; border: 1px solid #f5c2c3; border-radius: 12px; }
+details.danger-zone summary { color: var(--red); font-weight: 600; cursor: pointer; }
+details.danger-zone[open] { display: grid; gap: 10px; }
+.btn-danger { color: #fff; border-color: var(--red); background: var(--red); }
+.btn-danger:hover:not(:disabled) { background: #c63a3f; }
+.ready-chip.is-reviewed { margin-left: 8px; border-color: #c9c7f3; color: var(--primary); background: var(--lavender); }
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; }
+.stat-row .card { display: grid; gap: 6px; }
+.stat-row strong { color: var(--ink); font-family: var(--font-display); font-size: 22px; overflow-wrap: anywhere; }
+
+/* ---------- Result page: clips and YouTube languages ---------- */
+.clips-card { display: grid; gap: 12px; }
+.clips-card .transcript-head h2 { display: flex; align-items: center; gap: 8px; }
+.clip-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; }
+.clip-tile { display: grid; gap: 8px; margin: 0; }
+.clip-tile video { width: 100%; aspect-ratio: 9 / 16; border-radius: 12px; object-fit: cover; background: var(--navy); }
+.clip-tile figcaption { display: grid; gap: 2px; font-size: 13px; }
+.clip-tile figcaption strong { color: var(--ink); overflow-wrap: anywhere; }
+.clip-tile figcaption small { color: var(--muted); }
+.clip-tile figcaption a { display: inline-flex; align-items: center; gap: 4px; }
+.yt-audio-howto { margin-top: 12px; font-size: 13px; }
+.yt-audio-howto summary { color: var(--primary); font-weight: 600; cursor: pointer; }
+.yt-audio-howto ol { margin: 8px 0; padding-left: 20px; }
+.yt-audio-howto small { color: var(--muted); }
+
+/* ---------- Landing: churches ---------- */
+.ministry-band { background: var(--white); }
+.ministry-band .container { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); align-items: center; gap: 40px; }
+.ministry-band h2 { margin: 14px 0 12px; font-size: clamp(26px, 4vw, 38px); }
+.ministry-band .lead { color: var(--muted); }
+.ministry-price { display: grid; gap: 8px; text-align: center; }
+.ministry-price strong { color: var(--primary); font-family: var(--font-display); font-size: 36px; }
+.ministry-price strong small { color: var(--muted); font-size: 15px; font-weight: 500; }
+.ministry-price span { color: var(--muted); font-size: 14px; }
+
+/* ---------- Legal pages ---------- */
+.legal-page { min-height: 100vh; background: var(--cream); }
+.legal-body { max-width: 780px; padding-top: 40px; padding-bottom: 80px; }
+.legal-body h1 { font-size: clamp(30px, 5vw, 42px); }
+.legal-body h2 { margin: 32px 0 10px; font-size: 20px; scroll-margin-top: 24px; }
+.legal-body p, .legal-body li { color: var(--text); font-size: 15px; line-height: 1.7; }
+.legal-body ul { padding-left: 20px; }
+.legal-body a { color: var(--primary); text-decoration: underline; }
+.legal-updated { color: var(--muted); font-size: 13px; }
+
+@media (max-width: 900px) {
+  .ministry-band .container { grid-template-columns: 1fr; }
 }

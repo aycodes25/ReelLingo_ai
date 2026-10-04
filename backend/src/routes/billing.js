@@ -7,7 +7,7 @@ import {
 } from "../billing.js";
 import { asyncRoute, authenticate, blockDuringMaintenance, HttpError, workspace } from "../http.js";
 import { logger } from "../logger.js";
-import { CREDIT_PACKS, listPlans } from "../plans.js";
+import { listPacks, listPlans } from "../plans.js";
 
 const router = express.Router();
 
@@ -18,7 +18,7 @@ function requireBillingRole(request) {
 }
 
 router.get("/plans", asyncRoute(async (_request, response) => {
-  response.json({ plans: await listPlans(), packs: config.featurePayg ? CREDIT_PACKS : [], providers: billingProviders() });
+  response.json({ plans: await listPlans(), packs: config.featurePayg ? await listPacks() : [], providers: billingProviders(), yearly: config.featureYearly, weights: { ...config.minuteWeights } });
 }));
 
 router.get("/billing", authenticate, workspace, asyncRoute(async (request, response) => {
@@ -27,12 +27,16 @@ router.get("/billing", authenticate, workspace, asyncRoute(async (request, respo
     tier: plan.tier,
     plan: plan.plan,
     subscription: plan.subscription,
-    credits: plan.credits,
-    usage: { videos_this_month: plan.videosThisMonth, max_videos_per_month: plan.maxVideosPerMonth, minutes_this_month: plan.minutesThisMonth },
+    minutes: plan.minutes,
+    usage: { videos_this_month: plan.videosThisMonth, minutes_this_month: plan.minutesThisMonth },
     plans: await listPlans(),
-    packs: config.featurePayg ? CREDIT_PACKS : [],
+    packs: config.featurePayg ? await listPacks() : [],
     providers: billingProviders(),
+    yearly: config.featureYearly,
+    weights: { ...config.minuteWeights },
+    // Which plans can renew automatically on Paystack (a plan code is set for them), per billing cycle.
     paystack_auto_renew: Object.values(config.paystackPlanCodes).some(Boolean),
+    paystack_auto_renew_plans: Object.keys(config.paystackPlanCodes),
     payments: await paymentHistory(plan.billingId),
     workspace: request.workspace.teamId ? { team_id: request.workspace.teamId, role: request.workspace.role } : null,
   });
@@ -50,6 +54,7 @@ router.post("/billing/checkout", authenticate, blockDuringMaintenance, workspace
       planCode: request.body?.plan || null,
       packCode: request.body?.pack || null,
       autoRenew: request.body?.auto_renew !== false,
+      cycle: request.body?.cycle === "yearly" ? "yearly" : "monthly",
     });
     response.json(result);
   } catch (error) {

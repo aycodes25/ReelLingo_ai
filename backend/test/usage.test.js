@@ -6,6 +6,9 @@ import test from "node:test";
 
 const dataDirectory = await mkdtemp(join(tmpdir(), "reellingo-usage-"));
 Object.assign(process.env, {
+  // API keys and teams are hidden by default; these tests use them.
+  FEATURE_API: "true",
+  FEATURE_TEAMS: "true",
   MOCK_MODE: "false",
   OPENAI_API_KEY: "test-openai",
   OPENAI_ADMIN_KEY: "",
@@ -142,11 +145,11 @@ test("the API usage dashboard shows balances, usage per user, budgets and alerts
   const capped = await call("/admin/usage/user-budgets/ade", admin, "PUT", { monthly_usd_cap: 4 }).then((response) => response.json());
   assert.equal(capped.budget.exceeded, true);
   assert.equal(capped.budget.usd.remaining, 0);
-  const blocked = await call("/jobs", ade, "POST", { source_url: "https://www.youtube.com/watch?v=x", source_language: "yo", target_languages: "en" });
+  const blocked = await call("/jobs", ade, "POST", { source_url: "https://example.com/video.mp4", source_language: "yo", target_languages: "en", rights_confirmed: true, voice_consent: true });
   assert.equal(blocked.status, 402);
   assert.equal((await blocked.json()).code, "budget");
   await call("/admin/usage/user-budgets/ade", admin, "PUT", { monthly_usd_cap: 50, monthly_characters_cap: 100000 });
-  const allowed = await call("/jobs", ade, "POST", { source_url: "https://www.youtube.com/watch?v=x", source_language: "yo", target_languages: "en" });
+  const allowed = await call("/jobs", ade, "POST", { source_url: "https://example.com/video.mp4", source_language: "yo", target_languages: "en", rights_confirmed: true, voice_consent: true });
   assert.equal(allowed.status, 201);
   const withBudget = await call("/admin/usage", admin).then((response) => response.json());
   assert.equal(withBudget.users.find((user) => user.user_id === "ade").budget.characters.remaining, 50000);

@@ -4,6 +4,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyReferral, getProfile, listGlossary, planFor, referralStats, updateProfile } from "../accounts.js";
+import { eraseAccount } from "../admin.js";
+import { ledgerFor } from "../minutes.js";
 import { createApiKey, listApiKeys, revokeApiKey } from "../auth.js";
 import { config } from "../config.js";
 import { many, one, query } from "../db.js";
@@ -14,7 +16,7 @@ import { run } from "../media.js";
 import { emailConfigured, whatsappConfigured } from "../notify.js";
 import { downloadFile } from "../storage.js";
 import { listTeamsFor } from "../teams.js";
-import { completeYoutubeConnect, disconnectYoutube, youtubeConnectUrl, youtubeStatus } from "../youtube.js";
+import { completeYoutubeConnect, disconnectYoutube, listOwnVideos, youtubeConnectUrl, youtubeStatus } from "../youtube.js";
 import { loadAccessibleJob } from "./jobs.js";
 
 const router = express.Router();
@@ -25,11 +27,12 @@ function usagePayload(plan) {
     tier: plan.tier,
     plan: plan.plan,
     subscription: plan.subscription,
+    // Minutes: the plan's monthly allowance (resets on `resets_at`) plus never-expiring extra minutes.
+    minutes: plan.minutes,
     videos_this_month: plan.videosThisMonth,
     minutes_this_month: plan.minutesThisMonth,
-    max_videos_per_month: plan.maxVideosPerMonth,
     max_video_minutes: plan.maxVideoMinutes,
-    credits: plan.credits,
+    weights: { ...config.minuteWeights },
   };
 }
 
@@ -46,8 +49,13 @@ router.get("/me", authenticate, asyncRoute(async (request, response) => {
     is_admin: request.user.isAdmin,
     plan: usagePayload(plan),
     teams,
-    referral: { code: profile.referral_code, link: `${config.frontendUrl}/signup?ref=${profile.referral_code}`, ...referrals, bonus_minutes: config.referralBonusMinutes, bonus_videos: config.referralBonusVideos },
+    referral: {
+      code: profile.referral_code, link: `${config.frontendUrl}/signup?ref=${profile.referral_code}`, ...referrals,
+      bonus_minutes: config.referralBonusMinutes, new_user_minutes: config.referralNewUserMinutes,
+    },
     channels: { email: emailConfigured(), whatsapp: whatsappConfigured() },
+    is_reviewer: Boolean(profile.is_reviewer),
+    terms: { accepted_at: profile.terms_accepted_at || null, accepted_version: profile.terms_version || null, current_version: config.termsVersion },
   });
 }));
 
@@ -73,6 +81,61 @@ router.post("/me/referral", authenticate, asyncRoute(async (request, response) =
 
 router.get("/usage", authenticate, workspace, asyncRoute(async (request, response) => {
   response.json(usagePayload(await planFor({ userId: request.userId, teamId: request.workspace.teamId })));
+}));
+
+/** Every change to the workspace's minutes (plan use, packs, refunds, rewards), newest first. */
+router.get("/usage/minutes", authenticate, workspace, asyncRoute(async (request, response) => {
+  const plan = await planFor({ userId: request.userId, teamId: request.workspace.teamId });
+  response.json({ minutes: plan.minutes, history: await ledgerFor(plan.billingId, 100) });
+}));
+
+/** Records that the user accepted the current Terms of Service and Privacy Policy. */
+router.post("/me/terms", authenticate, asyncRoute(async (request, response) => {
+  await query("UPDATE profiles SET terms_accepted_at = CURRENT_TIMESTAMP, terms_version = $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2", [config.termsVersion, request.userId]);
+  response.json({ accepted_version: config.termsVersion });
+}));
+
+/** NDPA right of access and portability: everything stored about the user, as one JSON file. */
+router.get("/me/export", authenticate, asyncRoute(async (request, response) => {
+  const userId = request.userId;
+  const [profile, jobs, payments, voices, glossary, ledger, subscription] = await Promise.all([
+    getProfile(userId),
+    many("SELECT id, status, source_language, target_language, original_filename, duration_seconds, transcript_json, translated_segments_json, metadata_json, options_json, created_at, completed_at FROM jobs WHERE user_id = $1 ORDER BY id", [userId]),
+    many("SELECT reference, provider, kind, plan_code, credit_pack, amount, currency, status, created_at FROM payments WHERE user_id = $1 ORDER BY created_at", [userId]),
+    many("SELECT id, name, consent_at, created_at, last_used_at FROM voices WHERE user_id = $1", [userId]),
+    listGlossary(userId),
+    ledgerFor(userId, 10000),
+    one("SELECT tier, status, provider, current_period_end, billing_cycle FROM subscriptions WHERE user_id = $1", [userId]),
+  ]);
+  const parse = (value) => {
+    try {
+      return typeof value === "string" ? JSON.parse(value) : value;
+    } catch {
+      return value;
+    }
+  };
+  response.setHeader("Content-Disposition", `attachment; filename="reellingo-data-${new Date().toISOString().slice(0, 10)}.json"`);
+  response.json({
+    exported_at: new Date().toISOString(),
+    profile: { ...profile, is_admin: undefined, admin_notes: undefined },
+    subscription,
+    minutes_history: ledger,
+    payments,
+    saved_voices: voices,
+    glossary,
+    projects: jobs.map((job) => ({
+      ...job, transcript_json: parse(job.transcript_json), translated_segments_json: parse(job.translated_segments_json),
+      metadata_json: parse(job.metadata_json), options_json: parse(job.options_json),
+    })),
+  });
+}));
+
+/** NDPA right to erasure: deletes the account and its videos, voices and transcripts permanently. */
+router.delete("/me", authenticate, asyncRoute(async (request, response) => {
+  if (request.user.viaApiKey) throw new HttpError(403, "Delete your account from the website, not with an API key.");
+  if (String(request.body?.confirm || "") !== "DELETE") throw new HttpError(400, "Type DELETE to confirm that you want to delete your account permanently.");
+  await eraseAccount(request.userId);
+  response.json({ deleted: true });
 }));
 
 // ---------- Glossary ----------
@@ -211,6 +274,15 @@ router.get("/integrations/youtube/callback", asyncRoute(async (request, response
     response.redirect(`${config.frontendUrl}/settings?youtube=connected#integrations`);
   } catch (error) {
     response.redirect(`${config.frontendUrl}/settings?youtube=error&message=${encodeURIComponent(error.message)}#integrations`);
+  }
+}));
+
+/** The creator's own YouTube uploads, to import one for dubbing or add a language to it. */
+router.get("/integrations/youtube/videos", authenticate, asyncRoute(async (request, response) => {
+  try {
+    response.json(await listOwnVideos(request.userId, String(request.query.page || "")));
+  } catch (error) {
+    throw new HttpError(error.status === 403 ? 403 : 400, error.message);
   }
 }));
 

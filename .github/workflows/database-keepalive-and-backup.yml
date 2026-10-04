@@ -1,0 +1,74 @@
+name: Keep the database awake and back it up
+
+# Runs every day on GitHub's computers, even when your own PC is off:
+#   1. touches the Supabase database (free Supabase projects pause after 7 days without activity);
+#   2. saves a full copy of the database to your Cloudflare R2 bucket and keeps the last 14 days.
+# It only READS the database. Set it up once: README.md → "Database keep-alive and daily backups".
+# You can also run it by hand: GitHub → Actions → this workflow → "Run workflow".
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # every day at 03:17 UTC (04:17 in Lagos)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  keepalive-and-backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_BACKUP_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_BACKUP_SECRET_ACCESS_KEY }}
+      R2_BACKUP_BUCKET: ${{ secrets.R2_BACKUP_BUCKET }}
+      KEEP_DAYS: "14"
+    steps:
+      - name: Check the secrets are set
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::Add the DATABASE_URL secret: GitHub repo → Settings → Secrets and variables → Actions (see README)."
+            exit 1
+          fi
+
+      - name: Touch the database (keeps a free Supabase project awake)
+        run: |
+          docker run --rm -e PGCONNECT_TIMEOUT=30 postgres:17 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -t -c "select 'ReelLingo keep-alive', now();"
+          # Supabase also counts API requests as activity; this one is harmless (the API is closed to the public).
+          if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_ANON_KEY" ]; then
+            curl -s -o /dev/null -w "Supabase API answered %{http_code}\n" "$SUPABASE_URL/rest/v1/" -H "apikey: $SUPABASE_ANON_KEY" || true
+          fi
+
+      - name: Back up the database to Cloudflare R2
+        if: ${{ env.R2_BACKUP_BUCKET != '' }}
+        run: |
+          set -euo pipefail
+          stamp=$(date -u +%Y-%m-%d)
+          file="reellingo-db-$stamp.dump"
+          # pg_dump only reads. --no-owner/--no-privileges make the copy easy to restore into a new project.
+          docker run --rm -e PGCONNECT_TIMEOUT=30 -v "$PWD:/backup" postgres:17 \
+            pg_dump "$DATABASE_URL" --format=custom --no-owner --no-privileges --schema=public --file="/backup/$file"
+          size=$(stat -c %s "$file")
+          if [ "$size" -lt 1000 ]; then echo "::error::The backup is unexpectedly small ($size bytes)."; exit 1; fi
+          export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=auto
+          endpoint="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
+          aws s3 cp "$file" "s3://$R2_BACKUP_BUCKET/database/$file" --endpoint-url "$endpoint" --only-show-errors
+          echo "Saved $file ($size bytes) to the $R2_BACKUP_BUCKET bucket."
+          # Delete backups older than KEEP_DAYS days.
+          cutoff=$(date -u -d "-$KEEP_DAYS days" +%Y-%m-%d)
+          aws s3 ls "s3://$R2_BACKUP_BUCKET/database/" --endpoint-url "$endpoint" | awk '{print $4}' | while read -r name; do
+            day=$(echo "$name" | sed -n 's/^reellingo-db-\([0-9-]*\)\.dump$/\1/p')
+            if [ -n "$day" ] && [[ "$day" < "$cutoff" ]]; then
+              aws s3 rm "s3://$R2_BACKUP_BUCKET/database/$name" --endpoint-url "$endpoint" --only-show-errors
+              echo "Removed old backup $name"
+            fi
+          done
+          rm -f "$file"
+
+      - name: Remind me to set up backups
+        if: ${{ env.R2_BACKUP_BUCKET == '' }}
+        run: echo "::warning::The database was kept awake, but no backup was made. Add the R2 backup secrets (see README) to get daily backups."

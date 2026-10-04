@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
 import { config } from "./config.js";
 import { getMonthlyUsage, getSubscription } from "./database.js";
-import { dbTime, many, one, query, toBool } from "./db.js";
+import { many, one, query, toBool } from "./db.js";
+import { grantMinutes, minuteBalance } from "./minutes.js";
 import { getPlan } from "./plans.js";
 
 /** Billing identity of a workspace: a user's own account, or a team (shared plan and credits). */
@@ -16,7 +17,7 @@ function subscriptionActive(subscription) {
 }
 
 // Per-account limits an admin can set on top of the plan (e.g. an enterprise customer with custom terms).
-export const OVERRIDE_NUMBERS = ["videos_per_month", "max_video_minutes", "max_targets", "team_seats", "saved_voices", "priority"];
+export const OVERRIDE_NUMBERS = ["minutes_per_month", "max_video_minutes", "max_targets", "team_seats", "saved_voices", "priority"];
 export const OVERRIDE_BOOLS = ["voice_clone", "watermark", "lip_sync", "api_access"];
 
 export function parseOverrides(raw) {
@@ -41,13 +42,12 @@ function applyOverrides(plan, overrides) {
   plan.custom = true;
 }
 
-/** The plan, limits and usage that apply to an upload in this workspace. */
+/** The plan, limits and minutes that apply to an upload in this workspace. */
 export async function planFor({ userId, teamId = null }) {
   const billingId = billingIdFor({ userId, teamId });
-  const [subscription, usage, credits] = await Promise.all([
+  const [subscription, usage] = await Promise.all([
     getSubscription(billingId),
     getMonthlyUsage(userId, { teamId }),
-    listAvailableCredits(billingId),
   ]);
   const active = subscriptionActive(subscription);
   const tier = active ? subscription.tier : "free";
@@ -55,13 +55,15 @@ export async function planFor({ userId, teamId = null }) {
   if (tier === "custom") {
     plan.code = "custom";
     plan.name = "Custom";
-    plan.videos_per_month = Number(subscription.max_videos_per_month);
     plan.max_video_minutes = Math.min(Number(subscription.max_video_minutes), config.maxVideoMinutes);
     plan.voice_clone = true;
     plan.watermark = false;
   }
   const overrides = parseOverrides(subscription?.overrides_json);
   if (overrides) applyOverrides(plan, overrides);
+  // A paid plan's minutes renew on its billing day; an expired one falls back to the free calendar month.
+  const periodEnd = active && plan.code !== "free" ? subscription?.current_period_end || null : null;
+  const minutes = await minuteBalance(billingId, { allowance: plan.minutes_per_month, periodEnd });
   return {
     billingId,
     tier: plan.code,
@@ -69,46 +71,16 @@ export async function planFor({ userId, teamId = null }) {
     subscription: subscription ? {
       status: active ? subscription.status : "expired",
       provider: subscription.provider,
+      billing_cycle: subscription.billing_cycle || "monthly",
       current_period_end: subscription.current_period_end ? new Date(subscription.current_period_end).toISOString() : null,
       cancel_at_period_end: toBool(subscription.cancel_at_period_end),
     } : null,
+    periodEnd,
+    minutes,
     videosThisMonth: usage.videos,
     minutesThisMonth: Math.round((usage.seconds / 60) * 10) / 10,
-    maxVideosPerMonth: plan.videos_per_month,
     maxVideoMinutes: plan.max_video_minutes,
-    credits,
   };
-}
-
-export async function listAvailableCredits(billingId) {
-  const rows = await many(
-    "SELECT * FROM credits WHERE billing_id = $1 AND job_id IS NULL AND (expires_at IS NULL OR expires_at > $2) ORDER BY max_minutes, id",
-    [billingId, dbTime()],
-  );
-  return rows.map((row) => ({ id: Number(row.id), max_minutes: Number(row.max_minutes), source: row.source, created_at: row.created_at }));
-}
-
-/** The smallest unused credit that covers a video of this length. */
-export async function findCredit(billingId, minutesNeeded) {
-  return (await listAvailableCredits(billingId)).find((credit) => credit.max_minutes >= minutesNeeded) || null;
-}
-
-/** Marks a credit as spent; returns false if another request already used it. */
-export async function consumeCredit(creditId, jobId) {
-  const result = await query("UPDATE credits SET job_id = $1 WHERE id = $2 AND job_id IS NULL", [jobId, creditId]);
-  return result.rowCount > 0;
-}
-
-export async function releaseCredit(jobId) {
-  await query("UPDATE credits SET job_id = NULL WHERE job_id = $1", [jobId]);
-}
-
-export async function grantCredit(billingId, maxMinutes, source, reference = null) {
-  const row = await one(
-    "INSERT INTO credits (billing_id, max_minutes, source, reference) VALUES ($1, $2, $3, $4) RETURNING *",
-    [billingId, maxMinutes, source, reference],
-  );
-  return { id: Number(row.id), max_minutes: Number(row.max_minutes), source: row.source };
 }
 
 function newReferralCode() {
@@ -128,6 +100,9 @@ function normalizeProfile(row) {
     referral_code: row.referral_code,
     referred_by: row.referred_by || null,
     referral_rewarded: toBool(row.referral_rewarded),
+    is_reviewer: toBool(row.is_reviewer),
+    terms_accepted_at: row.terms_accepted_at ? new Date(row.terms_accepted_at instanceof Date ? row.terms_accepted_at : `${String(row.terms_accepted_at).replace(" ", "T")}${/Z|[+-]\d\d:?\d\d$/.test(String(row.terms_accepted_at)) ? "" : "Z"}`).toISOString() : null,
+    terms_version: row.terms_version || null,
     is_admin: toBool(row.is_admin),
     disabled: toBool(row.disabled),
     admin_notes: row.admin_notes || "",
@@ -175,7 +150,7 @@ export async function updateProfile(userId, changes) {
   return getProfile(userId);
 }
 
-/** Links a new user to whoever referred them. Rewards are paid once the new user finishes their first dub. */
+/** Links a new user to whoever referred them. Rewards are paid once the new user makes their first payment. */
 export async function applyReferral(userId, code) {
   const normalized = String(code || "").trim().toUpperCase();
   if (!config.featureReferrals) return { applied: false, reason: "Referral rewards are currently turned off." };
@@ -185,22 +160,32 @@ export async function applyReferral(userId, code) {
   if (profile.referred_by) return { applied: false, reason: "A referral code was already applied." };
   const referrer = await one("SELECT user_id FROM profiles WHERE referral_code = $1", [normalized]);
   if (!referrer || referrer.user_id === userId) return { applied: false, reason: "That referral code isn't valid." };
-  const priorJobs = await one("SELECT COUNT(*) AS count FROM jobs WHERE user_id = $1 AND status = 'done'", [userId]);
-  if (Number(priorJobs?.count || 0) > 0) return { applied: false, reason: "Referral codes only apply to new accounts." };
+  const priorPayments = await one("SELECT COUNT(*) AS count FROM payments WHERE user_id = $1 AND status = 'success'", [userId]);
+  if (Number(priorPayments?.count || 0) > 0) return { applied: false, reason: "Referral codes only apply to new accounts." };
   await query("UPDATE profiles SET referred_by = $1 WHERE user_id = $2", [referrer.user_id, userId]);
   return { applied: true };
 }
 
-/** Pays the referral bonus to both people the first time the referred user completes a dub. */
-export async function rewardReferralIfDue(userId) {
+/**
+ * Pays the referral reward the first time the invited user makes a big enough payment (never on sign-up or a free dub,
+ * so fake accounts can't farm free minutes). The inviter gets minutes; the new customer gets a welcome bonus.
+ */
+export async function rewardReferralIfDue(userId, payment = null) {
   if (!config.featureReferrals) return false;
   const profile = await getProfile(userId);
   if (!profile?.referred_by || profile.referral_rewarded) return false;
+  // Small purchases don't qualify yet: the reward waits for a payment that still makes money after paying it.
+  if (payment) {
+    const { referralAffordable } = await import("./profit.js");
+    if (!(await referralAffordable(payment))) return false;
+  }
   const claimed = await query("UPDATE profiles SET referral_rewarded = $1 WHERE user_id = $2 AND referral_rewarded = $3", [true, userId, false]);
   if (!claimed.rowCount) return false;
-  for (let index = 0; index < config.referralBonusVideos; index += 1) {
-    await grantCredit(profile.referred_by, config.referralBonusMinutes, "referral", `referred:${userId}`);
-    await grantCredit(userId, config.referralBonusMinutes, "referral", `referrer:${profile.referred_by}`);
+  if (config.referralBonusMinutes > 0) {
+    await grantMinutes(profile.referred_by, config.referralBonusMinutes, "referral", { reference: `referred:${userId}`, note: `Your friend ${profile.email || ""} joined a paid plan` });
+  }
+  if (config.referralNewUserMinutes > 0) {
+    await grantMinutes(userId, config.referralNewUserMinutes, "referral", { reference: `referrer:${profile.referred_by}`, note: "Welcome bonus for joining through a friend" });
   }
   return true;
 }

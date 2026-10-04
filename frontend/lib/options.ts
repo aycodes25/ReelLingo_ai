@@ -19,3 +19,11 @@ export const FORMATS: { value: string; label: string; hint: string }[] = [
   { value: "4:5", label: "4:5", hint: "Instagram, Facebook" },
   { value: "16:9", label: "16:9", hint: "YouTube" },
 ];
+
+// Native Nigerian voices (Spitch). Mirrors backend/src/spitch.js.
+export const NIGERIAN_VOICES: Record<string, { value: string; label: string }[]> = {
+  yo: [{ value: "femi", label: "Femi (man)" }, { value: "sade", label: "Sade (woman)" }, { value: "segun", label: "Segun (man)" }, { value: "funmi", label: "Funmi (woman)" }],
+  ha: [{ value: "aliyu", label: "Aliyu (man)" }, { value: "amina", label: "Amina (woman)" }, { value: "hasan", label: "Hasan (man)" }, { value: "zainab", label: "Zainab (woman)" }],
+  ig: [{ value: "obinna", label: "Obinna (man)" }, { value: "ngozi", label: "Ngozi (woman)" }, { value: "ebuka", label: "Ebuka (man)" }, { value: "amara", label: "Amara (woman)" }],
+  pcm: [{ value: "justice", label: "Justice (man)" }, { value: "boma", label: "Boma (woman)" }, { value: "tega", label: "Tega (man)" }, { value: "ufoma", label: "Ufoma (woman)" }],
+};

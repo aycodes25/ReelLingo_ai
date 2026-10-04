@@ -19,6 +19,9 @@ function run(command, args) {
 
 const dataDirectory = await mkdtemp(join(tmpdir(), "reellingo-live-api-"));
 Object.assign(process.env, {
+  // API keys and teams are hidden by default; these tests use them.
+  FEATURE_API: "true",
+  FEATURE_TEAMS: "true",
   MOCK_MODE: "false",
   OPENAI_API_KEY: "test-openai",
   ELEVENLABS_API_KEY: "test-elevenlabs",
@@ -40,11 +43,12 @@ const { app } = await import("../server.js");
 const database = await import("../src/database.js");
 const { createApiKey } = await import("../src/auth.js");
 const { activateSubscription, createCheckout } = await import("../src/billing.js");
-const { grantCredit, listAvailableCredits } = await import("../src/accounts.js");
+const { applyReferral, ensureProfile, planFor } = await import("../src/accounts.js");
+const { grantMinutes, minuteBalance } = await import("../src/minutes.js");
 const { config } = await import("../src/config.js");
 const { query } = await import("../src/db.js");
 
-test("live API: uploads, batches, review, sharing, deletion, quotas and webhooks", async (context) => {
+test("live API: uploads, batches, review, sharing, deletion, minutes and webhooks", async (context) => {
   await database.initializeDatabase();
   const server = app.listen(0);
   await new Promise((resolve) => server.once("listening", resolve));
@@ -62,8 +66,9 @@ test("live API: uploads, batches, review, sharing, deletion, quotas and webhooks
 
   // Plans are public and come from one table.
   const plans = await fetch(`${baseUrl}/plans`).then((response) => response.json());
-  assert.deepEqual(plans.plans.map((plan) => plan.code), ["free", "starter", "creator", "studio"]);
+  assert.deepEqual(plans.plans.map((plan) => plan.code), ["free", "subtitles", "starter", "creator", "studio", "ministry", "agency"]);
   assert.equal(plans.packs.length, 4);
+  assert.match(plans.plans.find((plan) => plan.code === "starter").features[0], /16 minutes of dubbing a month \(or 160 of subtitles\)/);
   assert.equal(plans.providers.paystack, true);
 
   // API keys only work on plans with API access.
@@ -77,9 +82,19 @@ test("live API: uploads, batches, review, sharing, deletion, quotas and webhooks
   const upload = (fields) => {
     const form = new FormData();
     form.append("file", new Blob([videoBytes], { type: "video/mp4" }), "Lagos Market.mp4");
-    for (const [key, value] of Object.entries(fields)) form.append(key, value);
+    for (const [key, value] of Object.entries({ rights_confirmed: "true", voice_consent: "true", ...fields })) form.append(key, value);
     return fetch(`${baseUrl}/jobs`, { method: "POST", headers, body: form });
   };
+  const studioMinutes = async () => (await planFor({ userId: "studio-user" })).minutes;
+
+  // Consent: everyone confirms they may use the video, and cloning needs the speakers' permission.
+  const noRights = await upload({ source_language: "yo", target_language: "en", rights_confirmed: "false" });
+  assert.equal(noRights.status, 400);
+  assert.equal((await noRights.json()).code, "rights");
+  const noConsent = await upload({ source_language: "yo", target_language: "en", voice_consent: "false" });
+  assert.equal(noConsent.status, 400);
+  assert.equal((await noConsent.json()).code, "voice_consent");
+  assert.equal((await studioMinutes()).available, 125, "refused uploads use no minutes");
 
   // One upload, two target languages: the second job waits for the first one's transcript.
   const created = await upload({ source_language: "yo", target_languages: "en,fr", captions: "karaoke", formats: "9:16", review: "true", multi_speaker: "true" });
@@ -92,10 +107,16 @@ test("live API: uploads, batches, review, sharing, deletion, quotas and webhooks
   assert.equal(leader.input_storage_path, follower.input_storage_path, "the upload is stored once");
   assert.equal(leader.priority, 3);
   assert.equal(leader.voice_clone, true);
-  assert.deepEqual({ ...leader.options_json, formats: leader.options_json.formats }, {
-    review: true, keep_background: true, multi_speaker: true, tone: "natural", captions: "karaoke", formats: ["9:16"],
-    lip_sync: false, trim_to_fit: false, watermark: false,
+  const { charge, rights_confirmed_at: rightsAt, voice_consent_at: consentAt, ...stored } = leader.options_json;
+  assert.deepEqual(stored, {
+    mode: "dub", review: true, keep_background: true, multi_speaker: true, tone: "natural", captions: "karaoke", formats: ["9:16"],
+    lip_sync: false, human_review: false, trim_to_fit: false, watermark: false,
   });
+  assert.ok(rightsAt && consentAt, "consent is recorded with a timestamp");
+  // A 3-second video into 2 languages: 0.1 minute each (charges round up to the next 0.1 minute).
+  assert.equal(charge.minutes, 0.1);
+  assert.equal(charge.kind, "job");
+  assert.equal((await studioMinutes()).available, 124.8);
   const claimed = await database.claimNextJob();
   assert.equal(claimed.id, leader.id, "the follower can't start before the leader has a transcript");
   assert.equal(await database.claimNextJob(), null);
@@ -121,7 +142,7 @@ test("live API: uploads, batches, review, sharing, deletion, quotas and webhooks
   // A finished job can be shared on a public page whose links are re-signed on every visit.
   const { uploadBuffer } = await import("../src/storage.js");
   await uploadBuffer(`jobs/${leader.id}/output-test.mp4`, videoBytes, "video/mp4");
-  await database.updateJob(leader.id, { status: "done", current_step: "done", outputs_json: [{ kind: "video", label: "Dubbed video (MP4)", path: `jobs/${leader.id}/output-test.mp4` }] });
+  await database.updateJob(leader.id, { status: "done", current_step: "done", duration_seconds: 3, outputs_json: [{ kind: "video", label: "Dubbed video (MP4)", path: `jobs/${leader.id}/output-test.mp4` }] });
   const shared = await fetch(`${baseUrl}/jobs/${leader.id}/share`, { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ enabled: true }) }).then((response) => response.json());
   assert.match(shared.share_url, /\/watch\/[\w-]+$/);
   const watch = await fetch(`${baseUrl}/public/watch/${shared.share_slug}`).then((response) => response.json());
@@ -138,12 +159,20 @@ test("live API: uploads, batches, review, sharing, deletion, quotas and webhooks
   assert.equal(redub.redub_count, 1);
   assert.equal(redub.options.captions, "bold");
   assert.equal((await database.getJob(leader.id)).transcript_json.length, 2);
+  assert.equal(redub.minutes_charged, 0.1, "a re-dub pays only for the voice it regenerates");
+  assert.equal((await studioMinutes()).available, 124.7);
 
-  // Retry resumes failed jobs.
+  // A failed run gives its minutes back; Retry pays for it again.
+  const { refundRun } = await import("../src/minutes.js");
   await database.updateJob(follower.id, { status: "failed", error_message: "boom" });
+  assert.equal(await refundRun(await database.getJob(follower.id)), 0.1);
+  assert.equal((await studioMinutes()).available, 124.8);
   const retried = await fetch(`${baseUrl}/jobs/${follower.id}/retry`, { method: "POST", headers }).then((response) => response.json());
   assert.equal(retried.status, "queued");
   assert.equal(retried.error_message, null);
+  assert.equal((await studioMinutes()).available, 124.7);
+  const retriedAgain = await fetch(`${baseUrl}/jobs/${follower.id}/retry`, { method: "POST", headers });
+  assert.equal(retriedAgain.status, 409, "only failed jobs can be retried");
 
   // Deleting removes files and hides the project (and its share page).
   await database.updateJob(leader.id, { status: "done" });
@@ -152,19 +181,20 @@ test("live API: uploads, batches, review, sharing, deletion, quotas and webhooks
   assert.equal((await fetch(`${baseUrl}/public/watch/${shared.share_slug}`)).status, 404);
   assert.equal((await fetch(watch.video_url)).status, 404, "the stored file is gone");
 
-  // Monthly quota, then a pay-as-you-go credit covers the next upload.
-  for (let index = 0; index < 30; index += 1) {
-    await database.createJob({ user_id: "studio-user", source_language: "yo", target_language: "en", input_storage_path: "", options_json: {} });
-  }
+  // When the plan's minutes run out, uploads stop; extra minutes (packs, gifts) are used next and never expire.
+  await query("INSERT INTO minute_ledger (billing_id, delta, bucket, kind) VALUES ('studio-user', -124.7, 'plan', 'test')");
+  assert.equal((await studioMinutes()).available, 0);
   const blocked = await upload({ source_language: "yo", target_language: "en" });
   assert.equal(blocked.status, 402);
-  assert.equal((await blocked.json()).code, "quota");
-  await grantCredit("studio-user", 5, "payg", "test");
+  const blockedBody = await blocked.json();
+  assert.equal(blockedBody.code, "minutes");
+  assert.equal(blockedBody.needed, 0.1);
+  await grantMinutes("studio-user", 5, "pack", { reference: "test-pack" });
   const paid = await upload({ source_language: "yo", target_language: "en" });
   assert.equal(paid.status, 201);
-  const paidJob = await database.getJob((await paid.json()).id);
-  assert.ok(paidJob.credit_id, "the credit is attached to the job");
-  assert.equal((await listAvailableCredits("studio-user")).length, 0);
+  const minutesAfter = await studioMinutes();
+  assert.equal(minutesAfter.topup_left, 4.9, "the extra minutes paid for it");
+  assert.equal(minutesAfter.plan_left, 0);
 
   // Glossary.
   const glossary = await fetch(`${baseUrl}/glossary`, { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ term: "Iya Basira" }) }).then((response) => response.json());
@@ -182,7 +212,8 @@ test("live API: uploads, batches, review, sharing, deletion, quotas and webhooks
   assert.deepEqual(teamJobs, [], "team workspaces have their own project list");
   assert.equal((await fetch(`${baseUrl}/jobs`, { headers: { ...headers, "X-Workspace": "99999" } })).status, 403);
 
-  // Paystack webhook: bad signatures are rejected; a valid charge grants the purchased credit once.
+  // Paystack webhook: bad signatures are rejected; a valid charge adds the purchased minutes once.
+  // (payg_15 is an old 15-minute pack: payments made before minutes existed are still honoured.)
   await query("INSERT INTO payments (user_id, billing_id, provider, reference, kind, credit_pack, amount, currency) VALUES ('studio-user', 'studio-user', 'paystack', 'rl_test_ref', 'payg', 'payg_15', 800000, 'NGN')");
   const event = JSON.stringify({ event: "charge.success", data: { reference: "rl_test_ref", customer: { customer_code: "CUS_1" } } });
   assert.equal((await fetch(`${baseUrl}/billing/webhooks/paystack`, { method: "POST", headers: { "x-paystack-signature": "bad" }, body: event })).status, 401);
@@ -190,12 +221,26 @@ test("live API: uploads, batches, review, sharing, deletion, quotas and webhooks
   for (let attempt = 0; attempt < 2; attempt += 1) {
     assert.equal((await fetch(`${baseUrl}/billing/webhooks/paystack`, { method: "POST", headers: { "x-paystack-signature": signature, "Content-Type": "application/json" }, body: event })).status, 200);
   }
-  const credits = await listAvailableCredits("studio-user");
-  assert.deepEqual(credits.map((credit) => credit.max_minutes), [15], "webhook retries don't grant twice");
+  assert.equal((await studioMinutes()).topup_left, 19.9, "webhook retries don't add the minutes twice");
+
+  // Referrals pay out when the invited friend makes their first payment (not when they sign up).
+  await ensureProfile("friend", "friend@example.com");
+  const studioProfile = await ensureProfile("studio-user", "studio@example.com");
+  assert.equal((await applyReferral("friend", studioProfile.referral_code)).applied, true);
+  await query("INSERT INTO payments (user_id, billing_id, provider, reference, kind, plan_code, amount, currency, billing_cycle) VALUES ('friend', 'friend', 'paystack', 'rl_friend_ref', 'subscription', 'starter', 1500000, 'NGN', 'monthly')");
+  const friendEvent = JSON.stringify({ event: "charge.success", data: { reference: "rl_friend_ref", customer: { customer_code: "CUS_2" } } });
+  const friendSignature = createHmac("sha512", "paystack-test-secret").update(friendEvent).digest("hex");
+  assert.equal((await fetch(`${baseUrl}/billing/webhooks/paystack`, { method: "POST", headers: { "x-paystack-signature": friendSignature, "Content-Type": "application/json" }, body: friendEvent })).status, 200);
+  assert.equal((await studioMinutes()).topup_left, 22.9, "the inviter gets 3 minutes");
+  const friend = await planFor({ userId: "friend" });
+  assert.equal(friend.tier, "starter");
+  assert.equal(friend.minutes.plan_left, 16);
+  assert.equal(friend.minutes.topup_left, 1, "the friend gets a 1-minute welcome bonus");
 
   // Paystack checkout: with a plan code the payment renews automatically (cards only); "pay once" leaves it out so
-  // transfer and USSD are offered too.
+  // transfer and USSD are offered too. Yearly plans cost 10 months and use their own plan code.
   config.paystackPlanCodes.creator = "PLN_creator_test";
+  config.paystackPlanCodes.creator_yearly = "PLN_creator_yearly_test";
   const sentToPaystack = [];
   const fetchBeforeCheckout = globalThis.fetch;
   globalThis.fetch = async (url, options) => {
@@ -207,13 +252,31 @@ test("live API: uploads, batches, review, sharing, deletion, quotas and webhooks
     const buyer = { id: "studio-user", email: "studio@example.com" };
     await createCheckout({ provider: "paystack", user: buyer, billingId: "studio-user", planCode: "creator" });
     await createCheckout({ provider: "paystack", user: buyer, billingId: "studio-user", planCode: "creator", autoRenew: false });
+    await createCheckout({ provider: "paystack", user: buyer, billingId: "studio-user", planCode: "creator", cycle: "yearly" });
+    await createCheckout({ provider: "paystack", user: buyer, billingId: "studio-user", packCode: "min_15" });
     assert.equal(sentToPaystack[0].plan, "PLN_creator_test");
-    assert.equal(sentToPaystack[0].amount, 4000000, "₦40,000 in kobo");
+    assert.equal(sentToPaystack[0].amount, 3800000, "₦38,000 in kobo");
     assert.equal(sentToPaystack[1].plan, undefined, "pay once: no plan, so transfer and USSD are allowed");
+    assert.equal(sentToPaystack[2].plan, "PLN_creator_yearly_test");
+    assert.equal(sentToPaystack[2].amount, 38000000, "a year costs 10 months");
+    assert.equal(sentToPaystack[3].amount, 1450000, "the 15-minute pack");
+    const yearlyPayment = await query("SELECT billing_cycle FROM payments WHERE amount = 38000000");
+    assert.equal(yearlyPayment.rows[0].billing_cycle, "yearly");
+    await assert.rejects(createCheckout({ provider: "paystack", user: buyer, billingId: "studio-user", packCode: "nope" }), /no longer exists/);
   } finally {
     globalThis.fetch = fetchBeforeCheckout;
-    config.paystackPlanCodes.creator = "";
+    delete config.paystackPlanCodes.creator;
+    delete config.paystackPlanCodes.creator_yearly;
   }
+  // A yearly plan still renews its minutes every month, on the day it was bought.
+  const { activateSubscription: activate } = await import("../src/billing.js");
+  await activate("yearly-user", "creator", { cycle: "yearly" });
+  const yearly = await planFor({ userId: "yearly-user" });
+  assert.equal(yearly.subscription.billing_cycle, "yearly");
+  assert.equal(yearly.minutes.plan_left, 40);
+  assert.ok(new Date(yearly.minutes.resets_at) - Date.now() < 32 * 86400000, "yearly plans reset minutes monthly");
+  assert.ok(new Date(yearly.subscription.current_period_end) - Date.now() > 360 * 86400000);
+  assert.ok((await minuteBalance("nobody")).available === 0);
 
   // Stripe webhook signatures are verified too.
   const stripeBody = JSON.stringify({ type: "customer.subscription.deleted", data: { object: { id: "sub_x" } } });

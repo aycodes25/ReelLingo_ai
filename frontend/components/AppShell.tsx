@@ -4,12 +4,16 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
-  BookOpenText, Bell, ChevronDown, ChevronRight, CircleHelp, Code2, CreditCard, FileText, LayoutGrid, LogOut, Menu, Plus, Search, Settings,
-  ShieldCheck, Users, Video,
+  BookOpenText, Bell, ChevronDown, ChevronRight, CircleHelp, ClipboardCheck, Code2, CreditCard, FileText, LayoutGrid, LogOut, Menu, Plus, Search,
+  Settings, ShieldCheck, Users, Video,
 } from "lucide-react";
 import BrandLogo from "@/components/BrandLogo";
-import { clearStoredToken, getApiHealth, getMe, getSessionUser, getStoredToken, getWorkspace, logout, setWorkspace } from "@/lib/api";
+import { acceptTerms, clearStoredToken, getApiHealth, getMe, getSessionUser, getStoredToken, getWorkspace, logout, setWorkspace } from "@/lib/api";
+import { formatMinutes } from "@/lib/format";
 import type { ApiHealth, Me, SessionUser } from "@/lib/types";
+
+// Set at sign-up when the person ticks "I agree", so their first visit records it without asking again.
+export const TERMS_AGREED_KEY = "reellingo_terms_agreed";
 
 export const SUPPORT_EMAIL = process.env.NEXT_PUBLIC_SUPPORT_EMAIL || "support@reellingo.ai";
 export const SUPPORT_WHATSAPP = process.env.NEXT_PUBLIC_SUPPORT_WHATSAPP || "";
@@ -41,6 +45,7 @@ export default function AppShell({ crumbs, children }: { crumbs: Crumb[]; childr
   const [workspace, setWorkspaceState] = useState("personal");
   const [health, setHealth] = useState<ApiHealth | null>(null);
   const [suspended, setSuspended] = useState<string | null>(null);
+  const [termsBusy, setTermsBusy] = useState(false);
 
   useEffect(() => {
     if (!getStoredToken()) {
@@ -49,7 +54,24 @@ export default function AppShell({ crumbs, children }: { crumbs: Crumb[]; childr
     }
     setUser(getSessionUser());
     setWorkspaceState(getWorkspace());
-    getMe().then((account) => {
+    getMe().then(async (account) => {
+      // People who agreed to the Terms at sign-up are recorded now that they're signed in.
+      let agreedAtSignup = false;
+      try {
+        agreedAtSignup = window.localStorage.getItem(TERMS_AGREED_KEY) === "1";
+      } catch {
+        agreedAtSignup = false;
+      }
+      if (agreedAtSignup && account.terms.accepted_version !== account.terms.current_version) {
+        await acceptTerms().then(() => {
+          account = { ...account, terms: { ...account.terms, accepted_version: account.terms.current_version } };
+          try {
+            window.localStorage.removeItem(TERMS_AGREED_KEY);
+          } catch {
+            // ignore
+          }
+        }).catch(() => undefined);
+      }
       setMe(account);
       setUser({ email: account.email, name: account.name || account.email.split("@")[0], creatorType: account.creator_type });
       // Forget a team workspace the user no longer belongs to.
@@ -77,6 +99,16 @@ export default function AppShell({ crumbs, children }: { crumbs: Crumb[]; childr
 
   useEffect(() => { setNavOpen(false); }, [pathname]);
 
+  async function agreeToTerms() {
+    setTermsBusy(true);
+    try {
+      await acceptTerms();
+      setMe((current) => (current ? { ...current, terms: { ...current.terms, accepted_version: current.terms.current_version } } : current));
+    } finally {
+      setTermsBusy(false);
+    }
+  }
+
   async function handleLogout() {
     await logout();
     router.replace("/login");
@@ -98,7 +130,10 @@ export default function AppShell({ crumbs, children }: { crumbs: Crumb[]; childr
   const pendingInvites = me?.teams.filter((team) => team.status === "invited").length || 0;
   const features = health?.settings?.features || {};
   const visibleNav = NAV.filter((item) => item.href !== "/teams" || features.teams !== false);
-  const nav = visibleNav;
+  const nav = me?.is_reviewer && features.human_review !== false
+    ? [...visibleNav.slice(0, -2), { href: "/review", label: "Reviews", icon: ClipboardCheck }, ...visibleNav.slice(-2)]
+    : visibleNav;
+  const needsTerms = Boolean(me && me.terms.accepted_version !== me.terms.current_version);
   const supportEmail = health?.settings?.support.email || SUPPORT_EMAIL;
   const supportWhatsapp = (health?.settings?.support.whatsapp || SUPPORT_WHATSAPP).replace(/\D/g, "");
   const announcement = health?.settings?.announcement;
@@ -146,7 +181,7 @@ export default function AppShell({ crumbs, children }: { crumbs: Crumb[]; childr
           {me && (
             <Link href="/billing" className="plan-chip">
               <span>{me.plan.plan.name} plan</span>
-              <small>{me.plan.videos_this_month}/{me.plan.max_videos_per_month} videos{me.plan.credits.length ? ` · ${me.plan.credits.length} credit${me.plan.credits.length === 1 ? "" : "s"}` : ""}</small>
+              <small>{formatMinutes(me.plan.minutes.available)} left{me.plan.minutes.topup_left > 0 ? ` · ${formatMinutes(me.plan.minutes.topup_left)} extra` : ""}</small>
             </Link>
           )}
           <div className="user-chip">
@@ -192,9 +227,26 @@ export default function AppShell({ crumbs, children }: { crumbs: Crumb[]; childr
             <Link href="/#how-it-works">Documentation</Link>
             <Link href="/docs/api"><Code2 size={13} style={{ display: "inline", verticalAlign: "-2px" }} /> API Reference</Link>
             <Link href="/settings#status">Status</Link>
+            <Link href="/terms">Terms</Link>
+            <Link href="/privacy">Privacy</Link>
             <a href={`mailto:${supportEmail}`}>Contact Support</a>
           </nav>
         </footer>
+        {needsTerms && (
+          <div className="modal-backdrop" role="presentation">
+            <div className="modal" role="dialog" aria-modal="true" aria-labelledby="terms-title">
+              <h2 id="terms-title">{me?.terms.accepted_version ? "We've updated our Terms" : "Before you continue"}</h2>
+              <p>
+                Please read and accept our <Link href="/terms" className="link" target="_blank">Terms of Service</Link> and <Link href="/privacy" className="link" target="_blank">Privacy Policy</Link>.
+                They explain how your videos and voice are used, how minutes and payments work, and your rights under Nigeria&apos;s Data Protection Act.
+              </p>
+              <div className="modal-actions">
+                <button type="button" className="btn btn-outline" onClick={handleLogout}>Log out</button>
+                <button type="button" className="btn btn-primary" disabled={termsBusy} onClick={agreeToTerms}>{termsBusy ? "Saving…" : "I agree"}</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

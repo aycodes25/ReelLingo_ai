@@ -49,10 +49,10 @@ export function timestamp(seconds: number): string {
 export const PIPELINE_STAGES = [
   { key: "upload", label: "Upload", steps: ["queued", "importing", "extracting_audio"] },
   { key: "transcription", label: "Transcription", steps: ["transcribing", "detecting_languages"] },
-  { key: "translation", label: "Translation", steps: ["translating", "review"] },
+  { key: "translation", label: "Translation", steps: ["translating", "human_review", "review"] },
   { key: "dubbing", label: "Dubbing", steps: ["separating", "dubbing", "mixing"] },
   { key: "merge", label: "Merge", steps: ["merging"] },
-  { key: "subtitle", label: "Export", steps: ["generating_subtitles", "rendering", "lip_syncing"] },
+  { key: "subtitle", label: "Export", steps: ["generating_subtitles", "rendering", "lip_syncing", "choosing_clips", "rendering_clips"] },
   { key: "download", label: "Download", steps: ["done"] },
 ] as const;
 
@@ -116,4 +116,24 @@ export function downloadText(fileName: string, contents: string, type: string): 
   link.download = fileName;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+/** "12.5 min", "1 min", "0 min" */
+export function formatMinutes(value: number | null | undefined): string {
+  const rounded = Math.round(Number(value || 0) * 10) / 10;
+  return `${rounded.toLocaleString(undefined, { maximumFractionDigits: 1 })} min`;
+}
+
+/**
+ * Minutes a new project will use: video length × languages, weighted for subtitles-only and the paid extras.
+ * Mirrors backend/src/minutes.js (each language is rounded up to the next 0.1 minute).
+ */
+export function estimateMinutes(seconds: number, languages: number, weights: { subtitles: number; lipSync: number; humanReview: number }, options: { mode: "dub" | "subtitles"; lipSync: boolean; humanReview: boolean }): number {
+  const minutes = Math.max(0, seconds) / 60;
+  if (!minutes) return 0;
+  let perLanguage = minutes * (options.mode === "subtitles" ? weights.subtitles : 1);
+  if (options.lipSync && options.mode !== "subtitles") perLanguage += minutes * weights.lipSync;
+  if (options.humanReview) perLanguage += minutes * weights.humanReview;
+  const rounded = Math.max(0.1, Math.ceil(perLanguage * 10 - 1e-9) / 10);
+  return Math.round(rounded * Math.max(1, languages) * 10) / 10;
 }

@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { ensureProfile, grantCredit, OVERRIDE_BOOLS, OVERRIDE_NUMBERS, parseOverrides, planFor, referralStats } from "./accounts.js";
+import { ensureProfile, OVERRIDE_BOOLS, OVERRIDE_NUMBERS, parseOverrides, planFor, referralStats } from "./accounts.js";
 import { activateSubscription, cancelSubscription } from "./billing.js";
 import { config, isAdminEmail } from "./config.js";
 import { getJob } from "./database.js";
@@ -7,6 +7,7 @@ import { dbTime, many, one, query, toBool } from "./db.js";
 import { deleteVoice } from "./dubbing.js";
 import { purgeJob } from "./jobfiles.js";
 import { logger } from "./logger.js";
+import { grantMinutes, ledgerFor } from "./minutes.js";
 import { sendEmail } from "./notify.js";
 import { getPlan, PERMISSIONS } from "./plans.js";
 
@@ -76,7 +77,8 @@ export async function listUsers({ search = "", plan = "", status = "", page = 1,
     [monthStart()],
   )).map((row) => [row.user_id, row]));
   const totals = new Map((await many("SELECT user_id, COUNT(*) AS jobs FROM jobs GROUP BY user_id")).map((row) => [row.user_id, Number(row.jobs)]));
-  const credits = new Map((await many("SELECT billing_id, COUNT(*) AS credits FROM credits WHERE job_id IS NULL GROUP BY billing_id")).map((row) => [row.billing_id, Number(row.credits)]));
+  // Never-expiring extra minutes (packs, referrals, admin grants) per account.
+  const extra = new Map((await many("SELECT billing_id, COALESCE(SUM(delta), 0) AS minutes FROM minute_ledger WHERE bucket = 'topup' GROUP BY billing_id")).map((row) => [row.billing_id, Math.round(Number(row.minutes) * 10) / 10]));
   const plans = new Map((await many("SELECT code, name FROM plans")).map((row) => [row.code, row.name]));
 
   let users = rows.map((row) => {
@@ -93,7 +95,8 @@ export async function listUsers({ search = "", plan = "", status = "", page = 1,
       videos_this_month: Number(usage.get(row.user_id)?.videos || 0),
       minutes_this_month: Math.round((Number(usage.get(row.user_id)?.seconds || 0) / 60) * 10) / 10,
       total_jobs: totals.get(row.user_id) || 0,
-      credits: credits.get(row.user_id) || 0,
+      extra_minutes: extra.get(row.user_id) || 0,
+      is_reviewer: toBool(row.is_reviewer),
       is_admin: toBool(row.is_admin) || isAdminEmail(row.email),
       disabled: toBool(row.disabled),
       created_at: iso(row.created_at),
@@ -112,10 +115,10 @@ export async function listUsers({ search = "", plan = "", status = "", page = 1,
 export async function userDetail(userId) {
   const profile = await one("SELECT * FROM profiles WHERE user_id = $1", [userId]);
   if (!profile) throw Object.assign(new Error("User not found."), { status: 404 });
-  const [plan, subscription, credits, jobs, payments, teams, keys, voices, referrals, cost] = await Promise.all([
+  const [plan, subscription, ledger, jobs, payments, teams, keys, voices, referrals, cost] = await Promise.all([
     planFor({ userId }),
     one("SELECT * FROM subscriptions WHERE user_id = $1", [userId]),
-    many("SELECT * FROM credits WHERE billing_id = $1 ORDER BY id DESC LIMIT 100", [userId]),
+    ledgerFor(userId, 100),
     many("SELECT id, status, source_language, target_language, original_filename, duration_seconds, created_at, deleted_at, error_message FROM jobs WHERE user_id = $1 ORDER BY id DESC LIMIT 30", [userId]),
     many("SELECT reference, provider, kind, plan_code, credit_pack, amount, currency, status, created_at FROM payments WHERE user_id = $1 ORDER BY created_at DESC LIMIT 30", [userId]),
     many("SELECT teams.id, teams.name, team_members.role, team_members.status FROM team_members JOIN teams ON teams.id = team_members.team_id WHERE team_members.user_id = $1", [userId]),
@@ -153,13 +156,18 @@ export async function userDetail(userId) {
     referrals,
     auth,
     plan: plan.plan,
-    usage: { videos_this_month: plan.videosThisMonth, minutes_this_month: plan.minutesThisMonth, max_videos_per_month: plan.maxVideosPerMonth },
+    usage: { videos_this_month: plan.videosThisMonth, minutes_this_month: plan.minutesThisMonth },
+    minutes: plan.minutes,
+    is_reviewer: toBool(profile.is_reviewer),
+    reviewer_languages: String(profile.reviewer_languages || "").split(",").filter(Boolean),
+    terms_accepted_at: iso(profile.terms_accepted_at),
     subscription: subscription ? {
       tier: subscription.tier, status: subscription.status, provider: subscription.provider,
       current_period_end: iso(subscription.current_period_end), cancel_at_period_end: toBool(subscription.cancel_at_period_end),
+      billing_cycle: subscription.billing_cycle || "monthly",
       overrides: parseOverrides(subscription.overrides_json),
     } : null,
-    credits: credits.map((credit) => ({ id: Number(credit.id), max_minutes: Number(credit.max_minutes), source: credit.source, used_by_job: credit.job_id ? Number(credit.job_id) : null, created_at: iso(credit.created_at) })),
+    ledger,
     jobs: jobs.map((job) => ({ ...job, id: Number(job.id), duration_seconds: job.duration_seconds === null ? null : Number(job.duration_seconds), created_at: iso(job.created_at), deleted: Boolean(job.deleted_at) })),
     payments: payments.map((payment) => ({ ...payment, amount: Number(payment.amount), created_at: iso(payment.created_at) })),
     teams: teams.map((team) => ({ ...team, id: Number(team.id) })),
@@ -275,6 +283,14 @@ export async function createUser({ email, password, name, plan = "free", months 
 /** Permanently removes an account: its projects and files, voices, keys, team memberships, and the Supabase login. */
 export async function deleteUser(userId, admin) {
   if (userId === admin.id) throw new Error("You can't delete your own account from here.");
+  return eraseAccount(userId);
+}
+
+/**
+ * Permanently deletes an account and everything stored about it (videos, voices, transcripts, login).
+ * Payment records are kept as required for tax and accounting, without the person's email.
+ */
+export async function eraseAccount(userId) {
   const profile = await one("SELECT * FROM profiles WHERE user_id = $1", [userId]);
   if (!profile) throw Object.assign(new Error("User not found."), { status: 404 });
   try {
@@ -296,7 +312,9 @@ export async function deleteUser(userId, admin) {
   for (const statement of [
     "DELETE FROM voices WHERE user_id = $1", "DELETE FROM glossary_terms WHERE user_id = $1", "DELETE FROM api_keys WHERE user_id = $1",
     "DELETE FROM integrations WHERE user_id = $1", "DELETE FROM team_members WHERE user_id = $1", "DELETE FROM credits WHERE billing_id = $1",
+    "DELETE FROM minute_ledger WHERE billing_id = $1", "DELETE FROM user_budgets WHERE user_id = $1",
     "DELETE FROM subscriptions WHERE user_id = $1", "DELETE FROM profiles WHERE user_id = $1",
+    "UPDATE review_tasks SET reviewer_id = NULL WHERE reviewer_id = $1 AND status IN ('open', 'claimed')",
   ]) await query(statement, [userId]);
   if (hasSupabaseAuth() && !userId.startsWith("local")) {
     try {
@@ -308,17 +326,11 @@ export async function deleteUser(userId, admin) {
   return { deleted: true, email: profile.email };
 }
 
-export async function grantCredits(billingId, maxMinutes, count = 1) {
-  const minutes = Number(maxMinutes);
-  const times = Math.min(Math.max(Number(count) || 1, 1), 100);
-  if (!Number.isInteger(minutes) || minutes <= 0) throw new Error("Credit length must be a whole number of minutes.");
-  for (let index = 0; index < times; index += 1) await grantCredit(billingId, minutes, "admin");
-  return times;
-}
-
-export async function revokeCredit(creditId) {
-  const result = await query("DELETE FROM credits WHERE id = $1 AND job_id IS NULL", [creditId]);
-  if (!result.rowCount) throw new Error("That credit doesn't exist or was already used.");
+/** Adds (or, with a negative number, removes) never-expiring minutes on an account, with a note for the history. */
+export async function adjustMinutes(billingId, minutes, note, adminId) {
+  const amount = Number(minutes);
+  if (!Number.isFinite(amount) || amount === 0 || Math.abs(amount) > 100000) throw new Error("Enter a number of minutes, for example 10 or -5.");
+  return grantMinutes(billingId, amount, amount > 0 ? "admin_grant" : "admin_remove", { note: String(note || "").slice(0, 300) || null, createdBy: adminId, reference: `admin:${adminId}:${Date.now()}` });
 }
 
 export async function emailUser(userId, subject, message) {

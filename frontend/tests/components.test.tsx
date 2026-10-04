@@ -22,6 +22,7 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     created_at: new Date().toISOString(), completed_at: null, demo_mode: false, transcript: null, translated_segments: null, has_transcript: true,
     detected_languages: [], speakers: null, metadata: null, options: {} as Job["options"], review_state: null, redub_count: 0, max_redubs: 5,
     batch_id: null, team_id: null, share_slug: null, share_url: null, youtube: null, duration_seconds: 30, files_expired: false, attempts: 1,
+    minutes_charged: 0.5, clips_pending: false, youtube_languages: [], human_reviewed_at: null, review_note: null,
     ...overrides,
   };
 }
@@ -58,12 +59,19 @@ describe("TargetLanguages", () => {
 });
 
 describe("UpsellDialog", () => {
-  it("offers trimming, a pay-as-you-go credit and an upgrade for long videos", () => {
+  it("offers trimming, extra minutes and an upgrade for long videos", () => {
     const onTrim = vi.fn();
     render(<UpsellDialog error={new ApiError("This video is 14 minutes long.", 402, { code: "too_long", max_video_minutes: 10, can_trim: true })} onClose={() => undefined} onTrim={onTrim} />);
     fireEvent.click(screen.getByRole("button", { name: /Dub the first 10 minutes/ }));
     expect(onTrim).toHaveBeenCalled();
-    expect(screen.getByRole("link", { name: /pay-as-you-go credit/ })).toHaveAttribute("href", "/billing#payg");
+    expect(screen.getByRole("link", { name: /Buy extra minutes/ })).toHaveAttribute("href", "/billing#payg");
     expect(screen.getByRole("link", { name: /Upgrade your plan/ })).toHaveAttribute("href", "/billing");
+  });
+
+  it("explains a shortage of minutes and offers to dub only what's affordable", () => {
+    render(<UpsellDialog error={new ApiError("This needs 6 minutes but you have 2 left.", 402, { code: "minutes", needed: 6, available: 2, can_trim: true, affordable_seconds: 120 })} onClose={() => undefined} onTrim={() => undefined} />);
+    expect(screen.getByRole("heading", { name: /Not enough minutes/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Dub the first 2:00/ })).toBeInTheDocument();
+    expect(screen.getByText(/This video needs 6 min/)).toBeInTheDocument();
   });
 });

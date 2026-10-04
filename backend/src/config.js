@@ -10,6 +10,10 @@ const number = (name, fallback) => {
   const value = Number(process.env[name]);
   return process.env[name] !== undefined && process.env[name] !== "" && Number.isFinite(value) ? value : fallback;
 };
+// Plan codes and price IDs for every plan, read from names like PAYSTACK_PLAN_STARTER or PAYSTACK_PLAN_STARTER_YEARLY.
+const prefixed = (prefix) => Object.fromEntries(Object.entries(process.env)
+  .filter(([key, value]) => key.startsWith(prefix) && value)
+  .map(([key, value]) => [key.slice(prefix.length).toLowerCase(), value.trim()]));
 const list = (name, fallback = []) => (process.env[name] ? process.env[name].split(",").map((item) => item.trim()).filter(Boolean) : fallback);
 
 export const config = {
@@ -53,7 +57,7 @@ export const config = {
   backgroundVolume: number("BACKGROUND_VOLUME", 1),
   mockMode: requestedMockMode && !openaiApiKey,
   uploadLimitBytes: 2 * 1024 * 1024 * 1024,
-  maxVideoMinutes: number("MAX_VIDEO_MINUTES", 60),
+  maxVideoMinutes: number("MAX_VIDEO_MINUTES", 120),
   // Optional overrides for the free plan (otherwise the plans table decides).
   freeVideosPerMonth: process.env.FREE_VIDEOS_PER_MONTH ? Number(process.env.FREE_VIDEOS_PER_MONTH) : null,
   freeMaxVideoMinutes: process.env.FREE_MAX_VIDEO_MINUTES ? Number(process.env.FREE_MAX_VIDEO_MINUTES) : null,
@@ -101,22 +105,59 @@ export const config = {
 
   // Payments
   paystackSecretKey: process.env.PAYSTACK_SECRET_KEY || "",
-  paystackPlanCodes: {
-    starter: process.env.PAYSTACK_PLAN_STARTER || "",
-    creator: process.env.PAYSTACK_PLAN_CREATOR || "",
-    studio: process.env.PAYSTACK_PLAN_STUDIO || "",
-  },
+  // { starter: "PLN_…", starter_yearly: "PLN_…", … } from PAYSTACK_PLAN_<PLAN> and PAYSTACK_PLAN_<PLAN>_YEARLY.
+  paystackPlanCodes: prefixed("PAYSTACK_PLAN_"),
   stripeSecretKey: process.env.STRIPE_SECRET_KEY || "",
   stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET || "",
-  stripePriceIds: {
-    starter: process.env.STRIPE_PRICE_STARTER || "",
-    creator: process.env.STRIPE_PRICE_CREATOR || "",
-    studio: process.env.STRIPE_PRICE_STUDIO || "",
+  stripePriceIds: prefixed("STRIPE_PRICE_"),
+
+  // Growth: when someone you invited makes their first payment, you get these minutes and they get a welcome bonus.
+  // Paid only on a purchase that still makes money after paying both rewards (profit.js), so they can't cause a loss.
+  referralBonusMinutes: number("REFERRAL_BONUS_MINUTES", 3),
+  referralNewUserMinutes: number("REFERRAL_NEW_USER_MINUTES", 1),
+
+  // Pricing (all editable in Admin → Settings → Pricing).
+  // How many minutes each extra uses, per minute of video per language. Dubbing itself is 1.
+  minuteWeights: {
+    subtitles: number("MINUTES_WEIGHT_SUBTITLES", 0.1),
+    lipSync: number("MINUTES_WEIGHT_LIP_SYNC", 12),
+    humanReview: number("MINUTES_WEIGHT_HUMAN_REVIEW", 1),
+    clips: number("MINUTES_PER_CLIP_SET", 1),
+  },
+  // Free users together may cost at most this much per month (US$); after that free dubbing pauses until the 1st.
+  freeMonthlyBudgetUsd: number("FREE_MONTHLY_BUDGET_USD", 20),
+  // What a human reviewer earns per minute of video they check (₦), and how long a review may wait for a reviewer.
+  reviewerPayNgnPerMinute: number("REVIEWER_PAY_NGN_PER_MINUTE", 300),
+  humanReviewTimeoutHours: number("HUMAN_REVIEW_TIMEOUT_HOURS", 48),
+  // Worst-case assumptions used by the profit check (Admin → Plans).
+  profitAssumptions: {
+    charactersPerMinuteWorst: number("PROFIT_CHARS_PER_MIN_WORST", 1200),
+    charactersPerMinuteTypical: number("PROFIT_CHARS_PER_MIN_TYPICAL", 900),
+    typicalUsagePercent: number("PROFIT_TYPICAL_USAGE_PERCENT", 60),
+    paystackPercent: number("PAYSTACK_FEE_PERCENT", 1.5),
+    paystackFlatNgn: number("PAYSTACK_FEE_FLAT_NGN", 100),
+    paystackCapNgn: number("PAYSTACK_FEE_CAP_NGN", 2000),
+    stripePercent: number("STRIPE_FEE_PERCENT", 4.4),
+    stripeFlatUsd: number("STRIPE_FEE_FLAT_USD", 0.3),
   },
 
-  // Growth
-  referralBonusVideos: number("REFERRAL_BONUS_VIDEOS", 1),
-  referralBonusMinutes: number("REFERRAL_BONUS_MINUTES", 10),
+  // Nigerian-language voices (Spitch: native Yoruba, Hausa, Igbo and Pidgin voices, plus Yoruba tone marks).
+  spitchApiKey: process.env.SPITCH_API_KEY || "",
+  spitchApiUrl: process.env.SPITCH_API_URL || "https://api.spitch.app/v1",
+  // "auto" uses Spitch for Yoruba, Hausa, Igbo and Pidgin when SPITCH_API_KEY is set; "elevenlabs" never does.
+  nigerianVoiceEngine: process.env.NIGERIAN_VOICE_ENGINE || "auto",
+  // Translate into Yoruba, Hausa and Igbo with "openai" or "spitch" (Spitch is trained on Nigerian languages).
+  nigerianTranslationEngine: process.env.NIGERIAN_TRANSLATION_ENGINE || "auto",
+  // Restore Yoruba tone marks (àmì ohùn) before the voice reads the text and in the subtitles.
+  yorubaToneMarks: process.env.YORUBA_TONE_MARKS !== "false",
+  // Transcribe Nigerian-language videos with ElevenLabs Scribe (much better than Whisper for Yoruba, Hausa and Igbo).
+  africanTranscriptionEngine: process.env.AFRICAN_TRANSCRIPTION_ENGINE || "elevenlabs",
+
+  // Legal pages (Terms and Privacy Policy).
+  legalCompanyName: process.env.LEGAL_COMPANY_NAME || "ReelLingo",
+  legalAddress: process.env.LEGAL_ADDRESS || "Lagos, Nigeria",
+  dpoEmail: process.env.DPO_EMAIL || "",
+  termsVersion: "2026-10-04",
 
   // Lip-sync (sync.so)
   syncApiKey: process.env.SYNC_API_KEY || "",
@@ -149,8 +190,14 @@ export const config = {
   featureYoutube: true,
   featureSavedVoices: true,
   featurePublicShare: true,
-  featureTeams: true,
-  featureApi: true,
+  // Hidden until a customer asks for them: switch on in Admin → Settings → Features.
+  featureTeams: process.env.FEATURE_TEAMS === "true",
+  featureApi: process.env.FEATURE_API === "true",
+  featureSubtitlesOnly: true,
+  featureHumanReview: true,
+  featureClips: true,
+  featureYoutubeLanguages: true,
+  featureYearly: true,
   featureReferrals: true,
   featurePayg: true,
   ngnPerUsd: number("NGN_PER_USD", 1600),
@@ -161,10 +208,13 @@ export const config = {
     scribePerHour: number("COST_SCRIBE_PER_HOUR", 0.22),
     chatInputPerMillion: number("COST_CHAT_INPUT_PER_M", 0.15),
     chatOutputPerMillion: number("COST_CHAT_OUTPUT_PER_M", 0.6),
-    elevenlabsPer1kChars: number("COST_ELEVENLABS_PER_1K_CHARS", 0.08),
+    // Creator plan overage is about $0.30 and Pro about $0.24 per 1,000 characters; set what your plan actually costs.
+    elevenlabsPer1kChars: number("COST_ELEVENLABS_PER_1K_CHARS", 0.24),
     elevenlabsIsolationPerMinute: number("COST_ELEVENLABS_ISOLATION_PER_MIN", 0.12),
     openaiTtsPer1kChars: number("COST_OPENAI_TTS_PER_1K_CHARS", 0.015),
     lipsyncPerMinute: number("COST_LIPSYNC_PER_MIN", 3),
+    spitchSpeechPerSecond: number("COST_SPITCH_SPEECH_PER_SEC", 0.0014),
+    spitchTextPer10kWords: number("COST_SPITCH_TEXT_PER_10K_WORDS", 1),
     whatsappPerMessage: number("COST_WHATSAPP_PER_MESSAGE", 0),
     emailPerMessage: number("COST_EMAIL_PER_MESSAGE", 0),
   },

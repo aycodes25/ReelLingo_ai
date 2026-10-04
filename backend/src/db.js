@@ -46,7 +46,7 @@ export const SCHEMA = [
       ["priority", "int", "NOT NULL DEFAULT 0"], ["attempts", "int", "NOT NULL DEFAULT 0"], ["heartbeat_at", "time"],
       ["started_at", "time"], ["completed_at", "time"], ["review_state", "text"], ["redub_count", "int", "NOT NULL DEFAULT 0"],
       ["share_slug", "text"], ["share_original", "bool"], ["deleted_at", "time"], ["files_expired_at", "time"], ["credit_id", "int"],
-      ["created_at", "time", NOW], ["updated_at", "time"],
+      ["created_at", "time", NOW], ["updated_at", "time"], ["plan_code", "text"],
     ],
     indexes: [
       "CREATE INDEX IF NOT EXISTS jobs_user_created ON jobs (user_id, created_at)",
@@ -54,6 +54,7 @@ export const SCHEMA = [
       "CREATE INDEX IF NOT EXISTS jobs_team ON jobs (team_id)",
       "CREATE INDEX IF NOT EXISTS jobs_batch ON jobs (batch_id)",
       "CREATE UNIQUE INDEX IF NOT EXISTS jobs_share_slug ON jobs (share_slug)",
+      "CREATE INDEX IF NOT EXISTS jobs_plan_code ON jobs (plan_code, created_at)",
     ],
   },
   {
@@ -66,6 +67,7 @@ export const SCHEMA = [
       ["lip_sync", "bool"], ["api_access", "bool"], ["team_seats", "int", "NOT NULL DEFAULT 1"], ["saved_voices", "int", "NOT NULL DEFAULT 0"],
       ["features_json", "text"], ["sort", "int", "NOT NULL DEFAULT 0"], ["public", "bool", "true"],
       ["permissions_json", "text"], ["contact_sales", "bool"],
+      ["minutes_per_month", "int", "NOT NULL DEFAULT 0"], ["price_usd_yearly", "real", "NOT NULL DEFAULT 0"], ["price_ngn_yearly", "int", "NOT NULL DEFAULT 0"],
     ],
   },
   {
@@ -75,7 +77,7 @@ export const SCHEMA = [
       ["videos_used_this_month", "int", "NOT NULL DEFAULT 0"], ["max_video_minutes", "int", "NOT NULL DEFAULT 3"],
       ["max_videos_per_month", "int", "NOT NULL DEFAULT 1"], ["status", "text", "NOT NULL DEFAULT 'active'"],
       ["provider", "text"], ["provider_ref", "text"], ["provider_customer", "text"], ["current_period_end", "time"],
-      ["cancel_at_period_end", "bool"], ["updated_at", "time"], ["overrides_json", "text"],
+      ["cancel_at_period_end", "bool"], ["updated_at", "time"], ["overrides_json", "text"], ["billing_cycle", "text"],
     ],
   },
   {
@@ -84,7 +86,7 @@ export const SCHEMA = [
       ["id", "id"], ["user_id", "text", "NOT NULL"], ["billing_id", "text", "NOT NULL"], ["provider", "text", "NOT NULL"],
       ["reference", "text", "NOT NULL UNIQUE"], ["kind", "text", "NOT NULL"], ["plan_code", "text"], ["credit_pack", "text"],
       ["amount", "int", "NOT NULL DEFAULT 0"], ["currency", "text", "NOT NULL"], ["status", "text", "NOT NULL DEFAULT 'pending'"],
-      ["raw_json", "text"], ["created_at", "time", NOW], ["updated_at", "time"],
+      ["raw_json", "text"], ["created_at", "time", NOW], ["updated_at", "time"], ["billing_cycle", "text"],
     ],
     indexes: ["CREATE INDEX IF NOT EXISTS payments_billing ON payments (billing_id, created_at)"],
   },
@@ -103,6 +105,7 @@ export const SCHEMA = [
       ["notify_email", "bool", "true"], ["notify_whatsapp", "bool"], ["referral_code", "text"], ["referred_by", "text"],
       ["referral_rewarded", "bool"], ["created_at", "time", NOW], ["updated_at", "time"],
       ["is_admin", "bool"], ["disabled", "bool"], ["admin_notes", "text"], ["last_seen_at", "time"],
+      ["is_reviewer", "bool"], ["reviewer_languages", "text"], ["terms_accepted_at", "time"], ["terms_version", "text"],
     ],
     indexes: ["CREATE UNIQUE INDEX IF NOT EXISTS profiles_referral_code ON profiles (referral_code)"],
   },
@@ -161,6 +164,40 @@ export const SCHEMA = [
     name: "user_budgets",
     columns: [
       ["user_id", "text", "PRIMARY KEY"], ["monthly_usd_cap", "real"], ["monthly_characters_cap", "int"], ["notes", "text"], ["updated_at", "time"],
+    ],
+  },
+  {
+    // Every change to an account's minutes: plan spending, packs, refunds, referral rewards, admin grants.
+    name: "minute_ledger",
+    columns: [
+      ["id", "id"], ["billing_id", "text", "NOT NULL"], ["delta", "real", "NOT NULL"], ["bucket", "text", "NOT NULL"],
+      ["kind", "text", "NOT NULL"], ["job_id", "int"], ["reference", "text"], ["note", "text"], ["created_by", "text"],
+      ["created_at", "time", NOW],
+    ],
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS minute_ledger_billing ON minute_ledger (billing_id, created_at)",
+      "CREATE INDEX IF NOT EXISTS minute_ledger_job ON minute_ledger (job_id, reference)",
+    ],
+  },
+  {
+    // Human review: a native speaker checks the transcript and translation before the voice is generated.
+    name: "review_tasks",
+    columns: [
+      ["id", "id"], ["job_id", "int", "NOT NULL"], ["language", "text", "NOT NULL"], ["status", "text", "NOT NULL DEFAULT 'open'"],
+      ["reviewer_id", "text"], ["minutes", "real", "NOT NULL DEFAULT 0"], ["payout_ngn", "int", "NOT NULL DEFAULT 0"],
+      ["claimed_at", "time"], ["submitted_at", "time"], ["paid_at", "time"], ["notes", "text"], ["created_at", "time", NOW],
+    ],
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS review_tasks_status ON review_tasks (status, language)",
+      "CREATE INDEX IF NOT EXISTS review_tasks_job ON review_tasks (job_id)",
+    ],
+  },
+  {
+    // Voice Lab: samples generated by the admin and rated by native speakers.
+    name: "voice_tests",
+    columns: [
+      ["id", "id"], ["language", "text", "NOT NULL"], ["engine", "text", "NOT NULL"], ["voice", "text"], ["text", "text", "NOT NULL"],
+      ["audio_path", "text"], ["rating", "int"], ["notes", "text"], ["created_by", "text"], ["created_at", "time", NOW],
     ],
   },
   {

@@ -190,13 +190,13 @@ export function wordsToSegments(words, languageCode) {
 }
 
 /** ElevenLabs Scribe: covers many African languages and labels who is speaking. */
-async function transcribeWithScribe(audioPath, workdir, sourceLanguage, durationSeconds) {
+async function transcribeWithScribe(audioPath, workdir, sourceLanguage, durationSeconds, { diarize = true } = {}) {
   if (!config.elevenlabsApiKey) throw new Error("ELEVENLABS_API_KEY is required for multi-speaker transcription.");
   const compressed = join(workdir, "scribe-input.mp3");
   await run("ffmpeg", ["-y", "-i", audioPath, "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "64k", compressed]);
   const form = new FormData();
   form.append("model_id", config.elevenlabsSttModel);
-  form.append("diarize", "true");
+  form.append("diarize", diarize ? "true" : "false");
   form.append("tag_audio_events", "false");
   form.append("timestamps_granularity", "word");
   if (sourceLanguage && sourceLanguage !== "auto") form.append("language_code", sourceLanguage);
@@ -212,9 +212,10 @@ async function transcribeWithScribe(audioPath, workdir, sourceLanguage, duration
   }, { label: "ElevenLabs transcription" });
   await recordCost("elevenlabs", "transcription", durationSeconds / 3600, "hours", (durationSeconds / 3600) * config.costs.scribePerHour);
   const code = languageCodeFromName(data.language_code) || (sourceLanguage !== "auto" ? sourceLanguage : "und");
-  const segments = wordsToSegments(data.words || [], code);
+  // Speaker changes still end a line, but without "multiple speakers" every line gets the same voice.
+  const segments = wordsToSegments(data.words || [], code).map((segment) => (diarize ? segment : { ...segment, speaker: "speaker_0" }));
   if (!segments.length) throw new Error("No speech was transcribed from the video. Check its audio track and try again.");
-  const speakers = [...new Set(segments.map((segment) => segment.speaker))];
+  const speakers = diarize ? [...new Set(segments.map((segment) => segment.speaker))] : [];
   return { segments, chunkLanguages: getLanguage(code) ? [code] : [], speakers };
 }
 
@@ -225,10 +226,12 @@ async function transcribeWithScribe(audioPath, workdir, sourceLanguage, duration
 export async function transcribe(audioPath, workdir, sourceLanguage, { multiSpeaker = false, vocabulary = "", durationSeconds = 0, onNote } = {}) {
   const chunksDirectory = join(workdir, "transcription-chunks");
   await mkdir(chunksDirectory, { recursive: true });
-  const useScribe = config.elevenlabsApiKey && (multiSpeaker || config.transcriptionProvider === "elevenlabs");
+  // Whisper struggles with Yoruba, Hausa, Igbo and Pidgin; ElevenLabs Scribe handles them far better.
+  const nigerianSource = ["yo", "ha", "ig", "pcm"].includes(sourceLanguage) && config.africanTranscriptionEngine === "elevenlabs";
+  const useScribe = config.elevenlabsApiKey && (multiSpeaker || nigerianSource || config.transcriptionProvider === "elevenlabs");
   if (useScribe) {
     try {
-      return await transcribeWithScribe(audioPath, workdir, sourceLanguage, durationSeconds);
+      return await transcribeWithScribe(audioPath, workdir, sourceLanguage, durationSeconds, { diarize: multiSpeaker });
     } catch (error) {
       if (!ai) throw error;
       onNote?.(`Speaker separation was unavailable (${error.message.slice(0, 160)}), so every line uses one voice.`);

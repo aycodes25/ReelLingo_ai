@@ -56,7 +56,7 @@ if (!env) {
     ["Video storage (Cloudflare R2)", [["R2_ACCOUNT_ID", "R2 account"], ["R2_ACCESS_KEY_ID", "R2 access key"], ["R2_SECRET_ACCESS_KEY", "R2 secret key"], ["STORAGE_PROVIDER", "set to r2 to use R2"]], false],
     ["Payments", [["PAYSTACK_SECRET_KEY", "Naira payments"], ["STRIPE_SECRET_KEY", "US-dollar card payments"], ["STRIPE_WEBHOOK_SECRET", "Stripe renewals"]], false],
     ["Notifications", [["RESEND_API_KEY", "email when dubs are ready"], ["WHATSAPP_TOKEN", "WhatsApp messages"], ["WHATSAPP_PHONE_NUMBER_ID", "WhatsApp messages"]], false],
-    ["Premium & monitoring", [["OPENAI_ADMIN_KEY", "OpenAI billing on the usage dashboard"], ["SYNC_API_KEY", "lip-sync"], ["GOOGLE_CLIENT_ID", "publish to YouTube"], ["GOOGLE_CLIENT_SECRET", "publish to YouTube"], ["SENTRY_DSN", "error alerts"], ["CLAMAV_HOST", "upload virus scanning"]], false],
+    ["Premium & monitoring", [["SPITCH_API_KEY", "native Yoruba, Hausa, Igbo & Pidgin voices"], ["OPENAI_ADMIN_KEY", "OpenAI billing on the usage dashboard"], ["SYNC_API_KEY", "lip-sync"], ["GOOGLE_CLIENT_ID", "publish to YouTube"], ["GOOGLE_CLIENT_SECRET", "publish to YouTube"], ["SENTRY_DSN", "error alerts"], ["CLAMAV_HOST", "upload virus scanning"]], false],
   ];
   for (const [title, keys, required] of groups) {
     console.log(`  ${bold(title)}`);
