@@ -190,7 +190,8 @@ function cleanOverrides(input) {
 
 async function ensureSubscriptionRow(userId) {
   await query(
-    "INSERT INTO subscriptions (user_id, tier, status, updated_at) VALUES ($1, 'free', 'active', CURRENT_TIMESTAMP) ON CONFLICT (user_id) DO NOTHING",
+    `INSERT INTO subscriptions (user_id, tier, status, videos_used_this_month, max_videos_per_month, max_video_minutes, updated_at)
+     VALUES ($1, 'free', 'active', 0, 1, 3, CURRENT_TIMESTAMP) ON CONFLICT (user_id) DO NOTHING`,
     [userId],
   );
 }

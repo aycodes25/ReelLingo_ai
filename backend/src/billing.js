@@ -62,7 +62,7 @@ async function recordPayment({ userId, billingId, provider, reference, kind, pla
 }
 
 /** Starts a checkout for a plan subscription or a pay-as-you-go pack and returns the hosted payment page URL. */
-export async function createCheckout({ provider, user, billingId, planCode = null, packCode = null }) {
+export async function createCheckout({ provider, user, billingId, planCode = null, packCode = null, autoRenew = true }) {
   const providers = billingProviders();
   if (!providers[provider]) throw new Error(`${provider === "stripe" ? "Stripe" : "Paystack"} payments aren't configured on this server.`);
   const pack = packCode ? getCreditPack(packCode) : null;
@@ -77,7 +77,9 @@ export async function createCheckout({ provider, user, billingId, planCode = nul
 
   if (provider === "paystack") {
     const amount = (pack ? pack.price_ngn : plan.price_ngn) * 100;
-    const planCodeOnPaystack = !pack ? config.paystackPlanCodes[plan.code] : "";
+    // A Paystack plan makes the payment renew automatically, but Paystack then only accepts cards.
+    // Without it the customer can also pay by bank transfer, USSD or bank, and pays again next month.
+    const planCodeOnPaystack = !pack && autoRenew ? config.paystackPlanCodes[plan.code] : "";
     await recordPayment({ userId: user.id, billingId, provider, reference, kind, planCode: plan?.code, pack: pack?.code, amount, currency: "NGN" });
     const data = await paystack("/transaction/initialize", {
       method: "POST",
@@ -126,11 +128,17 @@ async function fulfill(reference, { providerRef = null, customer = null, periodE
   if (!payment) throw new Error("Unknown payment reference.");
   const claimed = await query("UPDATE payments SET status = 'success', raw_json = COALESCE($1, raw_json), updated_at = CURRENT_TIMESTAMP WHERE reference = $2 AND status <> 'success'", [raw ? JSON.stringify(raw).slice(0, 20000) : null, reference]);
   if (!claimed.rowCount) return { alreadyProcessed: true, payment };
-  if (payment.kind === "payg") {
-    const pack = getCreditPack(payment.credit_pack);
-    await grantCredit(payment.billing_id, pack.minutes, "payg", reference);
-  } else {
-    await activateSubscription(payment.billing_id, payment.plan_code, { provider: payment.provider, providerRef, customer, periodEnd });
+  try {
+    if (payment.kind === "payg") {
+      const pack = getCreditPack(payment.credit_pack);
+      await grantCredit(payment.billing_id, pack.minutes, "payg", reference);
+    } else {
+      await activateSubscription(payment.billing_id, payment.plan_code, { provider: payment.provider, providerRef, customer, periodEnd });
+    }
+  } catch (error) {
+    // Put the payment back so the callback page or the next webhook can try again.
+    await query("UPDATE payments SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE reference = $2", [payment.status === "success" ? "pending" : payment.status, reference]);
+    throw error;
   }
   logger.info({ reference, kind: payment.kind, billingId: payment.billing_id }, "Payment fulfilled");
   return { alreadyProcessed: false, payment };
@@ -140,8 +148,8 @@ export async function activateSubscription(billingId, planCode, { provider = "ma
   const plan = await getPlan(planCode);
   const end = (periodEnd || addMonth()).toISOString();
   await query(
-    `INSERT INTO subscriptions (user_id, tier, status, provider, provider_ref, provider_customer, current_period_end, cancel_at_period_end, max_videos_per_month, max_video_minutes, updated_at)
-     VALUES ($1, $2, 'active', $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
+    `INSERT INTO subscriptions (user_id, tier, status, provider, provider_ref, provider_customer, current_period_end, cancel_at_period_end, max_videos_per_month, max_video_minutes, videos_used_this_month, updated_at)
+     VALUES ($1, $2, 'active', $3, $4, $5, $6, $7, $8, $9, 0, CURRENT_TIMESTAMP)
      ON CONFLICT (user_id) DO UPDATE SET tier = $2, status = 'active', provider = $3, provider_ref = COALESCE($4, subscriptions.provider_ref),
        provider_customer = COALESCE($5, subscriptions.provider_customer), current_period_end = $6, cancel_at_period_end = $7,
        max_videos_per_month = $8, max_video_minutes = $9, updated_at = CURRENT_TIMESTAMP`,

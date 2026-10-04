@@ -263,6 +263,8 @@ export interface BillingInfo {
   plans: Plan[];
   packs: CreditPack[];
   providers: { paystack: boolean; stripe: boolean };
+  /** Paystack plan codes are set, so card payments for a plan can renew automatically. */
+  paystack_auto_renew?: boolean;
   payments: Payment[];
   workspace: { team_id: number; role: string } | null;
 }

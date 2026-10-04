@@ -1,7 +1,8 @@
 import dotenv from "dotenv";
 import { resolve } from "node:path";
 
-dotenv.config();
+// Tests never read backend/.env, so they can't touch your real database, storage or paid APIs.
+if (!process.env.NODE_TEST_CONTEXT) dotenv.config();
 
 const requestedMockMode = process.env.MOCK_MODE?.toLowerCase() !== "false";
 const openaiApiKey = process.env.OPENAI_API_KEY || "";

@@ -7,12 +7,13 @@ import { listFilesWithSizes, STORAGE_LABELS, storageProvider } from "./storage.j
 /**
  * Paid providers shown on the admin "API usage" dashboard.
  * `unit` is what a manual budget is counted in when the provider can't report its own balance.
+ * `freeTier` is the monthly allowance shown until you enter a paid plan (Resend's free plan: 3,000 emails a month).
  */
 export const PROVIDERS = [
   { id: "elevenlabs", label: "ElevenLabs", purpose: "Voice cloning, dubbing, multi-speaker transcription", unit: "characters", configured: () => Boolean(config.elevenlabsApiKey) },
   { id: "openai", label: "OpenAI", purpose: "Transcription, translation, titles & hashtags", unit: "usd", configured: () => Boolean(config.openaiApiKey) },
   { id: "sync", label: "sync.so", purpose: "Lip-sync", unit: "usd", configured: () => Boolean(config.syncApiKey) },
-  { id: "resend", label: "Resend", purpose: "Email notifications", unit: "emails", configured: () => Boolean(config.resendApiKey) },
+  { id: "resend", label: "Resend", purpose: "Email notifications", unit: "emails", configured: () => Boolean(config.resendApiKey), freeTier: { amount: 3000, unit: "emails" } },
   { id: "whatsapp", label: "WhatsApp", purpose: "WhatsApp notifications", unit: "messages", configured: () => Boolean(config.whatsappToken && config.whatsappPhoneNumberId) },
   { id: "storage", label: "Storage", purpose: "Uploaded and dubbed video files", unit: "gb", configured: () => true },
 ];
@@ -168,7 +169,8 @@ export async function setProviderBudget(provider, input) {
   const unit = BUDGET_UNITS.includes(input.unit) ? input.unit : PROVIDERS.find((item) => item.id === provider).unit;
   const period = input.period === "one_time" ? "one_time" : "monthly";
   const alert = Math.min(Math.max(Number(input.alert_percent ?? 80), 1), 100);
-  const started = input.started_at ? new Date(input.started_at) : new Date();
+  // No date given: count from the start of today, so usage earlier today isn't left out.
+  const started = new Date(input.started_at || new Date().toISOString().slice(0, 10));
   if (Number.isNaN(started.getTime())) throw new Error("Enter a valid start date.");
   await query(
     `INSERT INTO provider_budgets (provider, kind, amount, unit, period, started_at, alert_percent, notes, updated_at)
@@ -201,6 +203,9 @@ async function recordedByProvider(since) {
   }
   return result;
 }
+
+/** Free storage each provider includes, used when you haven't entered a paid plan yourself. */
+export const STORAGE_FREE_GB = { r2: 10, supabase: 1 };
 
 const round = (value, places = 4) => Math.round(Number(value || 0) * 10 ** places) / 10 ** places;
 
@@ -249,15 +254,38 @@ export async function providerSummaries() {
       const used = budget.unit === "usd"
         ? (provider.id === "openai" && summary.billed_usd !== undefined ? summary.billed_usd : recorded.cost_usd)
         : budget.unit === "gb"
-          ? summary.storage?.total_gb ?? 0
+          ? (summary.storage?.total_bytes ?? 0) / GB
           : recorded.units[budget.unit] || 0;
       summary.balance = {
         source: provider.id === "openai" && summary.billed_usd !== undefined ? "provider_billing" : "recorded",
         unit: budget.unit,
         purchased: budget.amount,
-        used: round(used, budget.unit === "usd" ? 4 : 2),
-        remaining: round(Math.max(0, budget.amount - used), budget.unit === "usd" ? 4 : 2),
+        used: round(used, budget.unit === "usd" ? 4 : budget.unit === "gb" ? 6 : 2),
+        remaining: round(Math.max(0, budget.amount - used), budget.unit === "usd" ? 4 : budget.unit === "gb" ? 6 : 2),
         resets_at: budget.period === "monthly" ? new Date(Date.UTC(since.getUTCFullYear(), since.getUTCMonth() + 1, since.getUTCDate(), since.getUTCHours(), since.getUTCMinutes())).toISOString() : null,
+      };
+    }
+    const freeGb = STORAGE_FREE_GB[storageProvider()];
+    if (provider.id === "storage" && !summary.balance && freeGb && summary.storage) {
+      // No paid plan entered: measure against the provider's free tier.
+      summary.balance = {
+        source: "free_tier",
+        unit: "gb",
+        purchased: freeGb,
+        used: round(summary.storage.total_bytes / GB, 6),
+        remaining: round(Math.max(0, freeGb - summary.storage.total_bytes / GB), 6),
+        resets_at: null,
+      };
+    }
+    if (!summary.balance && provider.freeTier && summary.configured) {
+      const used = recorded.units[provider.freeTier.unit] || 0;
+      summary.balance = {
+        source: "free_tier",
+        unit: provider.freeTier.unit,
+        purchased: provider.freeTier.amount,
+        used,
+        remaining: Math.max(0, provider.freeTier.amount - used),
+        resets_at: new Date(Date.UTC(since.getUTCFullYear(), since.getUTCMonth() + 1, 1)).toISOString(),
       };
     }
     if (summary.balance && summary.balance.purchased > 0) {

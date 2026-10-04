@@ -823,6 +823,8 @@ pre code { padding: 0; color: inherit; background: none; }
 .current-plan-side { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .credit-count { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 99px; color: #0c7066; background: var(--teal-soft); font-size: 13px; font-weight: 600; }
 .app-pricing { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+.pay-method { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 0 0 18px; color: var(--muted); font-size: 14px; }
+.pay-method .segmented { flex-wrap: wrap; }
 .plan-note { display: block; color: var(--muted); font-size: 13px; text-align: center; }
 .plan-local { margin: -8px 0 12px; color: var(--muted); font-size: 13px; }
 .section-block { margin-top: 44px; }
