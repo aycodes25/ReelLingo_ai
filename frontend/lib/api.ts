@@ -1,7 +1,7 @@
 import type {
   ApiHealth, ApiKey, BillingInfo, CreateJobOptions, CreditPack, GlossaryTerm, Job, LanguageOption, Me, MinuteBalance, MinuteLedgerEntry,
   MinuteWeights, Plan, ReviewerHome, ReviewTask, SavedVoice, SessionUser, TeamDetail, TeamMember, TeamSummary, TranscriptSegment, Usage,
-  WatchData, YoutubeLanguageResult, YoutubeVideo,
+  PreflightResult, WatchData, YoutubeLanguageResult, YoutubeVideo,
 } from "./types";
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -308,6 +308,15 @@ export async function uploadResumable(file: File, onProgress: (fraction: number)
       if (previous.length) upload.resumeFromPreviousUpload(previous[0]);
       upload.start();
     }).catch(() => upload.start());
+  });
+}
+
+/** Asks whether a video with these choices can get all the way through, before anything is uploaded or charged. */
+export function preflightJob(input: { mode: "dub" | "subtitles"; targetLanguages: string[]; durationSeconds: number | null; voiceMode: string; lipSync: boolean }): Promise<PreflightResult> {
+  return request<PreflightResult>("/jobs/preflight", {
+    method: "POST",
+    context: "Could not check the video",
+    json: { mode: input.mode, target_languages: input.targetLanguages, duration_seconds: input.durationSeconds, voice_mode: input.voiceMode, lip_sync: input.lipSync },
   });
 }
 

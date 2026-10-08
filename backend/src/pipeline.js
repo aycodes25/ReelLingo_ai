@@ -14,6 +14,7 @@ import { getLanguage } from "./languages.js";
 import { lipSync } from "./lipsync.js";
 import { logger } from "./logger.js";
 import { getMediaInfo, run } from "./media.js";
+import { alertAdminsOnce, friendlyError } from "./friendly.js";
 import { ensureCharged, jobMinutes, lineHash, newCharge, NotEnoughMinutes, perMinuteWeight, refundRun, secondsAffordable } from "./minutes.js";
 import { notifyJob } from "./notify.js";
 import {
@@ -230,7 +231,7 @@ export async function processJob(job, { localInputPath = null } = {}) {
     let translated = job.translated_segments_json;
     if (!translated?.length || translated.length !== transcript.length) {
       await step("translating");
-      translated = await translate(transcript, job.target_language, undefined, { glossary, tone: options.tone || "natural" });
+      translated = await translate(transcript, job.target_language, undefined, { glossary, tone: options.tone || "natural", onNote: (note) => notes.push(note) });
       await updateJob(job.id, { translated_segments_json: translated });
     }
 
@@ -399,8 +400,16 @@ export async function processJob(job, { localInputPath = null } = {}) {
  * project stays finished and only the clips' minutes are refunded.
  */
 async function failJob(job, error, notes = []) {
-  const message = error instanceof Error ? error.message : String(error);
+  const technical = error instanceof Error ? error.message : String(error);
   logger.error({ err: error, jobId: job.id }, "Job failed");
+  // The customer reads a sentence they can act on; the full provider message stays in the log (and the admins are
+  // emailed when something on our side, like credit or a key, needs fixing).
+  const friendly = friendlyError(error);
+  if (friendly.alertsAdmin) {
+    void alertAdminsOnce(friendly.kind, `ReelLingo: a service needs attention (${friendly.kind === "credit" ? "out of credit" : "connection problem"})`,
+      `Project #${job.id} could not finish. The customer was told we're fixing it and their minutes were returned.\n\nWhat the service said:\n${technical.slice(0, 800)}\n\nCheck Admin → API usage.`);
+  }
+  const message = friendly.text;
   const latest = (await getJob(job.id)) || job;
   const refunded = await refundRun(latest).catch((refundError) => {
     logger.error({ err: refundError, jobId: job.id }, "Refund after failure failed");

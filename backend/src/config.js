@@ -79,6 +79,18 @@ export const config = {
   maxRedubs: number("MAX_REDUBS", 5),
   // Manual "Retry" presses allowed per failed project (a failed run is refunded, so unlimited retries would be free provider spend).
   maxRetries: number("MAX_RETRIES", 3),
+  // Refuse to start a video (with a clear message) when a service it needs has run out of credit.
+  blockOnEmptyProvider: process.env.BLOCK_ON_EMPTY_PROVIDER !== "false",
+  // How many requests may be open to Spitch at once. Spitch's Tier 1 allows 3; more are refused with "concurrency_limit_exceeded".
+  spitchConcurrency: number("SPITCH_CONCURRENCY", 3),
+  // Calm music people can listen to while their video processes (the admin controls it from Admin → App settings).
+  waitingMusic: {
+    enabled: process.env.WAITING_MUSIC !== "false",
+    autoplay: process.env.WAITING_MUSIC_AUTOPLAY === "true",
+    style: process.env.WAITING_MUSIC_STYLE || "calm",
+    volume: number("WAITING_MUSIC_VOLUME", 0.35),
+    url: process.env.WAITING_MUSIC_URL || "",
+  },
   // How long the admin audit log keeps entries.
   auditRetentionDays: number("AUDIT_RETENTION_DAYS", 730),
 

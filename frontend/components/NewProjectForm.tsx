@@ -3,15 +3,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowRight, Captions, ChevronDown, Link2, Lock, Mic, Upload, X, Youtube } from "lucide-react";
+import { ArrowRight, Captions, ChevronDown, CircleAlert, Info, Link2, Lock, Mic, Upload, X, Youtube } from "lucide-react";
 import LanguagePicker from "@/components/LanguagePicker";
 import TargetLanguages from "@/components/TargetLanguages";
 import UploadDropzone from "@/components/UploadDropzone";
 import UpsellDialog from "@/components/UpsellDialog";
-import { ApiError, createJob, getIntegrations, getVoices, getYoutubeVideos, uploadResumable } from "@/lib/api";
+import LaunchPanel from "@/components/LaunchPanel";
+import { ApiError, createJob, getIntegrations, getVoices, getYoutubeVideos, preflightJob, uploadResumable } from "@/lib/api";
 import { clock, estimateMinutes, formatMinutes } from "@/lib/format";
 import { CAPTION_STYLES, FORMATS, NIGERIAN_VOICES, TONES } from "@/lib/options";
-import type { ApiHealth, CreateJobOptions, LanguageOption, SavedVoice, Usage, YoutubeVideo } from "@/lib/types";
+import type { ApiHealth, CreateJobOptions, LanguageOption, PreflightResult, SavedVoice, Usage, WaitingMusicSettings, YoutubeVideo } from "@/lib/types";
 
 interface NewProjectFormProps {
   languages: LanguageOption[];
@@ -73,6 +74,8 @@ export default function NewProjectForm({ languages, usage, health, setupProblem 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [upsell, setUpsell] = useState<ApiError | null>(null);
+  const [check, setCheck] = useState<PreflightResult | null>(null);
+  const [uploadedFirst, setUploadedFirst] = useState(false);
   const uploadedRef = useRef<{ file: File; id: string } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const maxTargets = plan?.max_targets || 1;
@@ -122,6 +125,17 @@ export default function NewProjectForm({ languages, usage, health, setupProblem 
 
   const seconds = source === "upload" ? fileSeconds : source === "youtube" ? youtubeVideo?.duration_seconds ?? null : null;
   const estimate = useMemo(() => (seconds ? estimateMinutes(seconds, targets.length, weights, { mode, lipSync: dubbing && lipSync, humanReview }) : null), [seconds, targets.length, weights, mode, lipSync, dubbing, humanReview]);
+  // Ask whether this video can get all the way through as soon as the choices are made, not after a long upload.
+  useEffect(() => {
+    if (!targets.length) return undefined;
+    let current = true;
+    const timer = window.setTimeout(() => {
+      preflightJob({ mode, targetLanguages: targets, durationSeconds: seconds, voiceMode: dubbing ? voiceMode || "clone" : "standard", lipSync: dubbing && lipSync })
+        .then((result) => { if (current) setCheck(result); })
+        .catch(() => { if (current) setCheck(null); });
+    }, 500);
+    return () => { current = false; window.clearTimeout(timer); };
+  }, [mode, targets, seconds, voiceMode, lipSync, dubbing]);
   const available = usage?.minutes.available ?? null;
   const shortOfMinutes = estimate !== null && available !== null && estimate > available;
 
@@ -155,6 +169,7 @@ export default function NewProjectForm({ languages, usage, health, setupProblem 
           uploadId = await uploadResumable(file, setProgress, abortRef.current.signal);
           uploadedRef.current = { file, id: uploadId };
         }
+        setUploadedFirst(true);
       }
       setProgress(null);
       const job = await createJob(
@@ -182,8 +197,9 @@ export default function NewProjectForm({ languages, usage, health, setupProblem 
 
   const submitArea = (disabled: boolean) => (
     <SubmitArea {...{
-      isSubmitting, progress, errorMessage, cancelUpload, onSubmit: () => submit(), targets: targets.length, mode,
-      disabled: disabled || !languages.length || !rightsConfirmed || (cloning && !voiceConsent),
+      isSubmitting, progress, errorMessage, cancelUpload, onSubmit: () => submit(), targets: targets.length, mode, check,
+      fromUpload: uploadedFirst, music: health?.settings?.waiting_music,
+      disabled: disabled || !languages.length || !rightsConfirmed || (cloning && !voiceConsent) || Boolean(check && !check.ok),
     }} />
   );
 
@@ -361,13 +377,23 @@ export default function NewProjectForm({ languages, usage, health, setupProblem 
   );
 }
 
-function SubmitArea({ isSubmitting, progress, errorMessage, disabled, cancelUpload, onSubmit, targets, mode }: {
+function SubmitArea({ isSubmitting, progress, errorMessage, disabled, cancelUpload, onSubmit, targets, mode, check, fromUpload, music }: {
   isSubmitting: boolean; progress: number | null; errorMessage: string | null; disabled: boolean; cancelUpload: () => void; onSubmit: () => void; targets: number; mode: "dub" | "subtitles";
+  check: PreflightResult | null; fromUpload: boolean; music?: WaitingMusicSettings;
 }) {
   const noun = mode === "subtitles" ? "subtitle" : "dub";
+  const launching = isSubmitting && progress === null;
   return (
     <>
-      {progress !== null ? (
+      {check && !check.ok && (
+        <div role="alert" className="preflight-block"><CircleAlert size={18} /><div><strong>This can&apos;t be started right now</strong>{check.blockers.map((blocker) => <p key={blocker.message}>{blocker.message}</p>)}</div></div>
+      )}
+      {check?.ok && check.warnings.length > 0 && (
+        <div className="preflight-warn" role="status"><Info size={16} /><div>{check.warnings.map((warning) => <p key={warning.message}>Admin note: {warning.message}</p>)}</div></div>
+      )}
+      {launching ? (
+        <LaunchPanel fromUpload={fromUpload} music={music} />
+      ) : progress !== null ? (
         <div className="upload-progress" role="status">
           <div><span>Uploading… {Math.round(progress * 100)}%</span><button type="button" className="link" onClick={cancelUpload}><X size={13} />Cancel</button></div>
           <div className="progress-track"><i style={{ width: `${Math.round(progress * 100)}%` }} /></div>

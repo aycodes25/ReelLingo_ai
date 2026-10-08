@@ -147,6 +147,7 @@ export default function BillingPage() {
                     {plan.price_usd && !plan.contact_sales ? <small>/{yearly ? "year" : "month"}</small> : null}
                   </div>
                   {yearly && <p className="plan-saving">{money(plan.price_usd_yearly / 12, Math.round(plan.price_ngn_yearly / 12))}/month, billed yearly</p>}
+                  <p className="plan-includes">{plan.contact_sales ? "What you can expect" : plan.price_usd ? "Every month you get" : "What you get"}</p>
                   <ul className="check-list">{plan.features.map((feature) => <li key={feature}><CircleCheck size={18} />{feature}</li>)}</ul>
                   {current ? (
                     <button type="button" className="btn btn-outline btn-block" disabled>Current plan</button>

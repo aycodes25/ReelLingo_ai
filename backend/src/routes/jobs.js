@@ -7,6 +7,7 @@ import { extname, join } from "node:path";
 import { listGlossary, planFor } from "../accounts.js";
 import { config } from "../config.js";
 import { uploadBlocker } from "../uploadgate.js";
+import { preflight } from "../preflight.js";
 import { jobCosts } from "../costs.js";
 import { countInputUsers, createJob, getJob, listJobs, updateJob } from "../database.js";
 import { one } from "../db.js";
@@ -167,6 +168,22 @@ async function assertFreeTierOpen(plan, user) {
   }
 }
 
+/**
+ * "Will this get all the way through?" The studio asks this as soon as a video and languages are chosen, so a problem
+ * (a service out of credit, voices not switched on) is shown up front instead of after a long upload.
+ */
+router.post("/jobs/preflight", authenticate, workspace, asyncRoute(async (request, response) => {
+  const body = request.body || {};
+  const mode = body.mode === "subtitles" ? "subtitles" : "dub";
+  const targets = [...new Set(list(body.target_languages))].filter((code) => getLanguage(code) && code !== "auto");
+  const plan = await planFor({ userId: request.userId, teamId: request.workspace.teamId });
+  const cloned = mode === "dub" && body.voice_mode !== "standard" && plan.plan.voice_clone;
+  const seconds = Number(body.duration_seconds);
+  const result = await preflight({ targets, duration: Number.isFinite(seconds) && seconds > 0 ? seconds : null, mode, cloned, lipSync: bool(body.lip_sync) });
+  // Admins can always try (to test a fix), so they only see the warnings.
+  response.json(request.user.isAdmin ? { ...result, ok: true, blockers: [], warnings: [...result.warnings, ...result.blockers] } : result);
+}));
+
 /** Refuses before any file is accepted: suspended, out of minutes, free tier paused, or over a spending cap. */
 const uploadGate = asyncRoute(async (request, response, next) => {
   const blocked = await uploadBlocker({ user: request.user, teamId: request.workspace.teamId });
@@ -273,11 +290,13 @@ router.post("/jobs", authenticate, blockDuringMaintenance, workspace, jobLimiter
       options.voice_consent_at = new Date().toISOString();
     }
 
+    const timings = { started: Date.now() };
     let duration = null;
     let mediaType = "video";
     let youtubeVideo = null;
     if (source) {
       const scan = await scanFile(source.path);
+      timings.scanMs = Date.now() - timings.started;
       if (!scan.clean) throw new HttpError(400, "This file was flagged by our virus scanner and can't be processed.");
       const probed = await probe(source.path);
       duration = probed.duration;
@@ -307,6 +326,13 @@ router.post("/jobs", authenticate, blockDuringMaintenance, workspace, jobLimiter
     if (duration === null && plan.minutes.available < 0.1) {
       throw new HttpError(402, "You've used all your minutes. Buy more minutes or upgrade to continue.", { code: "minutes", needed: 0.1, available: plan.minutes.available });
     }
+    // Stop here (before anything is charged or stored) if a service this video needs can't finish it.
+    if (!request.user.isAdmin) {
+      const check = await preflight({ targets, duration, mode, cloned: voiceClone, lipSync: options.lip_sync });
+      if (!check.ok) {
+        throw new HttpError(503, check.blockers[0].message, { code: "provider_unavailable", blockers: check.blockers.map(({ code, message }) => ({ code, message })) });
+      }
+    }
     const { perTarget, trimSeconds } = allocate(plan, targets, duration, {
       trimToFit: options.trim_to_fit, mode, lipSync: options.lip_sync, humanReview: options.human_review,
     });
@@ -315,7 +341,9 @@ router.post("/jobs", authenticate, blockDuringMaintenance, workspace, jobLimiter
     let inputPath = "";
     if (source) {
       inputPath = `uploads/${randomUUID()}${extname(source.originalname).toLowerCase() || (mediaType === "audio" ? ".mp3" : ".mp4")}`;
+      const storingFrom = Date.now();
       await uploadFile(inputPath, source.path, source.mimetype);
+      timings.storeMs = Date.now() - storingFrom;
     }
 
     const batchId = targets.length > 1 ? randomUUID() : null;
@@ -352,6 +380,8 @@ router.post("/jobs", authenticate, blockDuringMaintenance, workspace, jobLimiter
     }
     const outputs = await Promise.all(created.map((job) => jobOutput(job)));
     succeeded = true;
+    // Where the "Starting…" wait goes (virus scan, saving the file, the rest), so a slow step is easy to find.
+    logger.info({ userId: request.userId, ...timings, totalMs: Date.now() - timings.started, bytes: source?.size }, "New project accepted");
     response.status(201).json({ ...outputs[0], jobs: outputs });
   } finally {
     // A resumable upload survives a rejected request (e.g. "too long"), so the creator can trim or buy minutes

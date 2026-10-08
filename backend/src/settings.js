@@ -40,6 +40,13 @@ export const SETTINGS = [
   // Limits
   { key: "max_video_minutes", field: "maxVideoMinutes", type: "number", min: 1, max: 600, group: "Limits", label: "Longest video any plan can upload (minutes)", help: "The Church & Ministry plan allows 120-minute sermons, so keep this at 120 or more." },
   { key: "max_redubs", field: "maxRedubs", type: "number", min: 0, max: 100, group: "Limits", label: "Re-dubs allowed per project" },
+  { key: "spitch_concurrency", field: "spitchConcurrency", type: "number", min: 1, max: 50, group: "Nigerian voices", label: "Spitch requests at the same time", help: "Spitch Tier 1 allows 3 at once; a higher tier allows more. Going over makes Spitch refuse requests." },
+  { key: "waiting_music", field: "waitingMusic.enabled", type: "bool", group: "Waiting music", label: "Offer calm music while a video is processing", help: "Shows a small play button on the progress page. Nothing is downloaded: the default music is generated in the browser." },
+  { key: "waiting_music_autoplay", field: "waitingMusic.autoplay", type: "bool", group: "Waiting music", label: "Start the music by itself", help: "Browsers only allow this after the person has clicked something. They can always turn it off, and we remember their choice." },
+  { key: "waiting_music_style", field: "waitingMusic.style", type: "select", options: ["calm", "uplifting"], group: "Waiting music", label: "Music style" },
+  { key: "waiting_music_volume", field: "waitingMusic.volume", type: "number", min: 0, max: 1, step: 0.05, group: "Waiting music", label: "Music volume (0 to 1)" },
+  { key: "waiting_music_url", field: "waitingMusic.url", type: "text", group: "Waiting music", label: "Your own track (optional link to an MP3 you have the rights to)", help: "Leave empty to use the built-in music. The link must be https and allow playing from other websites." },
+  { key: "block_on_empty_provider", field: "blockOnEmptyProvider", type: "bool", group: "Limits", label: "Don't start videos when a service is out of credit", help: "Uses the balances on Admin → API usage. Customers see a short \"topping up\" message and nothing is charged. Keep the balances there up to date, or turn this off." },
   { key: "max_retries", field: "maxRetries", type: "number", min: 0, max: 100, group: "Limits", label: "Retries allowed per failed project", help: "A failed run gives the minutes back, so every retry is a chance for paid work to be wasted. Admins can always retry." },
   { key: "audit_retention_days", field: "auditRetentionDays", type: "number", min: 30, max: 3650, group: "Limits", label: "Keep the admin audit log for (days)" },
   { key: "retention_days", field: "retentionDays", type: "number", min: 1, max: 3650, group: "Limits", label: "Delete project files after (days)" },
@@ -205,6 +212,10 @@ export function publicSettings() {
     signups_enabled: Boolean(config.signupsEnabled),
     announcement: config.announcement ? { text: config.announcement, tone: config.announcementTone } : null,
     support: { email: config.supportEmail, whatsapp: config.supportWhatsapp },
+    waiting_music: {
+      enabled: Boolean(config.waitingMusic.enabled), autoplay: Boolean(config.waitingMusic.autoplay), style: config.waitingMusic.style,
+      volume: Math.min(1, Math.max(0, Number(config.waitingMusic.volume))), url: /^https:\/\//i.test(config.waitingMusic.url) ? config.waitingMusic.url : "",
+    },
     features: {
       link_import: config.featureLinkImport, multi_speaker: config.featureMultiSpeaker, review: config.featureReview,
       keep_background: config.featureBackground, captions: config.featureCaptions, formats: config.featureFormats,

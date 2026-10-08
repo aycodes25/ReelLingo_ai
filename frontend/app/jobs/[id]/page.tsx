@@ -7,9 +7,11 @@ import {
   Captions, Check, CircleAlert, CircleCheck, Clock3, Download, ExternalLink, FileText, Info, Languages, LoaderCircle, Merge, Mic, PencilLine, RotateCcw, Upload,
 } from "lucide-react";
 import AppShell, { SUPPORT_EMAIL } from "@/components/AppShell";
-import { getJob, getLanguages, retryJob, streamJob } from "@/lib/api";
+import Loader3D from "@/components/Loader3D";
+import WaitingMusic from "@/components/WaitingMusic";
+import { getApiHealth, getJob, getLanguages, retryJob, streamJob } from "@/lib/api";
 import { clock, languageName, PIPELINE_STAGES, progressPercent, projectFileName, sourceLabel, stageIndex, STEP_MESSAGES } from "@/lib/format";
-import type { Job, LanguageOption } from "@/lib/types";
+import type { Job, LanguageOption, WaitingMusicSettings } from "@/lib/types";
 
 const STAGE_ICONS = [Upload, FileText, Languages, Mic, Merge, Captions, Download];
 
@@ -28,11 +30,15 @@ export default function JobStatusPage() {
   const [log, setLog] = useState<LogEntry[]>([]);
   const lastStepRef = useRef<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const sawTranscriptRef = useRef(false);
 
+  const [music, setMusic] = useState<WaitingMusicSettings | undefined>(undefined);
+
   useEffect(() => {
     getLanguages().then(setLanguages).catch(() => undefined);
+    getApiHealth().then((health) => setMusic(health.settings?.waiting_music)).catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -97,13 +103,14 @@ export default function JobStatusPage() {
   async function handleRetry() {
     if (!job) return;
     setRetrying(true);
+    setRetryError(null);
     try {
       await retryJob(job.id);
       lastStepRef.current = null;
       setLog([]);
       setRetryKey((key) => key + 1);
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : "Retry failed.");
+      setRetryError(error instanceof Error ? error.message : "Retry failed.");
     } finally {
       setRetrying(false);
     }
@@ -157,6 +164,13 @@ export default function JobStatusPage() {
             </div>
             <div className="progress-track" role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${failed ? 100 : percent}%` }} /></div>
             <div className="progress-labels"><span>Uploading &amp; Processing</span><span>Merging &amp; Finalizing</span></div>
+            {job && (job.status === "queued" || job.status === "processing") && (
+              <div className="wait-row">
+                <Loader3D label="Working on your video" />
+                <p>We&apos;re working on it. You can leave this page open and relax: we&apos;ll email you when it&apos;s ready.</p>
+                <WaitingMusic settings={music} />
+              </div>
+            )}
           </section>
 
           {failed && (
@@ -164,6 +178,7 @@ export default function JobStatusPage() {
               {job?.files_expired ? <Link href="/dashboard#new-project" className="link">Start a new project</Link> : (
                 <button type="button" className="link" onClick={handleRetry} disabled={retrying}><RotateCcw size={13} style={{ display: "inline", verticalAlign: "-2px" }} /> {retrying ? "Retrying…" : "Retry from where it stopped"}</button>
               )}
+              {retryError && <><br /><strong>{retryError}</strong></>}
             </span></div>
           )}
           {withReviewer && (

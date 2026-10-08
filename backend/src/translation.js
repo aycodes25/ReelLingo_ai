@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { config } from "./config.js";
+import { logger } from "./logger.js";
 import { recordChatUsage } from "./costs.js";
 import { getLanguage, languages } from "./languages.js";
 import { withRetries } from "./retry.js";
@@ -114,14 +115,33 @@ function wantsToneMarks(targetLanguage) {
   return targetLanguage === "yo" && config.yorubaToneMarks && spitchConfigured();
 }
 
+/** Tone marks are a nice-to-have: if Spitch can't add them, the translation is kept as it is. */
+async function withToneMarks(translated, targetLanguage, options) {
+  if (!wantsToneMarks(targetLanguage)) return translated;
+  try {
+    return await toneMarkSegments(translated);
+  } catch (error) {
+    logger.warn({ err: error }, "Could not add Yoruba tone marks");
+    options.onNote?.("Yoruba tone marks could not be added this time.");
+    return translated;
+  }
+}
+
 export async function translate(segments, targetLanguage, requestCompletion, options = {}) {
   // Yoruba, Hausa and Igbo go to Spitch (trained on Nigerian languages) when it's set up. Tests inject their own model.
   if (!requestCompletion && useSpitchTranslation(targetLanguage)) {
-    const translated = await spitchTranslateSegments(segments, targetLanguage, { glossary: options.glossary || [] });
-    return wantsToneMarks(targetLanguage) ? toneMarkSegments(translated) : translated;
+    try {
+      const translated = await spitchTranslateSegments(segments, targetLanguage, { glossary: options.glossary || [] });
+      return await withToneMarks(translated, targetLanguage, options);
+    } catch (error) {
+      // Spitch is busy or out of credit: finish with the backup translator rather than failing the whole video.
+      if (!ai) throw error;
+      logger.warn({ err: error }, "Spitch translation failed, using the backup translator");
+      options.onNote?.("Our Nigerian-language translator was busy, so this was translated with our backup translator. Review the lines if you can.");
+    }
   }
   const translated = await translateWithOpenAI(segments, targetLanguage, requestCompletion, options);
-  return !requestCompletion && wantsToneMarks(targetLanguage) ? toneMarkSegments(translated) : translated;
+  return requestCompletion ? translated : withToneMarks(translated, targetLanguage, options);
 }
 
 async function translateWithOpenAI(segments, targetLanguage, requestCompletion, { retryDelayMs, glossary = [], tone = "natural" } = {}) {
@@ -169,9 +189,14 @@ async function translateWithOpenAI(segments, targetLanguage, requestCompletion, 
 /** Re-translates one edited line, giving the model its neighbours so pronouns and references stay consistent. */
 export async function translateLine(segments, index, targetLanguage, { glossary = [], tone = "natural", requestCompletion } = {}) {
   if (!requestCompletion && useSpitchTranslation(targetLanguage)) {
-    const segment = segments[index];
-    const text = await spitchTranslateText(segment.text, targetLanguage, segment.language && segment.language !== "und" ? segment.language : undefined);
-    return wantsToneMarks(targetLanguage) ? addYorubaToneMarks(text) : text;
+    try {
+      const segment = segments[index];
+      const text = await spitchTranslateText(segment.text, targetLanguage, segment.language && segment.language !== "und" ? segment.language : undefined);
+      return wantsToneMarks(targetLanguage) ? await addYorubaToneMarks(text).catch(() => text) : text;
+    } catch (error) {
+      if (!ai) throw error;
+      logger.warn({ err: error }, "Spitch could not re-translate a line, using the backup translator");
+    }
   }
   const line = await translateLineWithOpenAI(segments, index, targetLanguage, { glossary, tone, requestCompletion });
   return !requestCompletion && wantsToneMarks(targetLanguage) ? addYorubaToneMarks(line) : line;

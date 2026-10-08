@@ -68,7 +68,15 @@ test("live API: uploads, batches, review, sharing, deletion, minutes and webhook
   const plans = await fetch(`${baseUrl}/plans`).then((response) => response.json());
   assert.deepEqual(plans.plans.map((plan) => plan.code), ["free", "subtitles", "starter", "creator", "studio", "ministry", "agency"]);
   assert.equal(plans.packs.length, 4);
-  assert.match(plans.plans.find((plan) => plan.code === "starter").features[0], /16 minutes of dubbing a month \(or 160 of subtitles\)/);
+  // Every card starts with the same three plain lines, written from the real limits so they can't be wrong.
+  const lines = (code) => plans.plans.find((plan) => plan.code === code).features;
+  assert.deepEqual(lines("free").slice(0, 3), ["2 minutes of dubbing per month (or 20 minutes of subtitles)", "Each video must be 3 minutes or shorter", "1 language per upload"]);
+  assert.deepEqual(lines("starter").slice(0, 3), ["16 minutes of dubbing per month (or 160 minutes of subtitles)", "Each video can be up to 10 minutes long", "2 languages per upload"]);
+  assert.deepEqual(lines("studio").slice(0, 3), ["125 minutes of dubbing per month (or 1250 minutes of subtitles)", "Each video can be up to 60 minutes long", "10 languages per upload"]);
+  assert.deepEqual(lines("ministry").slice(0, 3), ["250 minutes of dubbing per month (or 2500 minutes of subtitles)", "Each video can be up to 120 minutes long (2 hours)", "5 languages per upload"]);
+  assert.equal(lines("agency")[0], "Each video can be up to 120 minutes long (2 hours)");
+  for (const plan of plans.plans) assert.equal(new Set(plan.features).size, plan.features.length, `${plan.name}: no line appears twice`);
+  assert.ok(!lines("starter").some((line) => /languages per upload/.test(line) && line !== "2 languages per upload"), "an old hand-typed language line can't contradict the real limit");
   assert.equal(plans.providers.paystack, true);
 
   // API keys only work on plans with API access.

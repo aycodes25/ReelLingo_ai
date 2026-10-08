@@ -156,8 +156,25 @@ export interface ApiHealth {
   settings?: PublicSettings;
 }
 
+/** Calm music offered while a video processes; the admin controls every part of it. */
+export interface WaitingMusicSettings {
+  enabled: boolean;
+  autoplay: boolean;
+  style: "calm" | "uplifting";
+  volume: number;
+  url: string;
+}
+
+/** The answer to "will this video get all the way through?", asked before anything is uploaded. */
+export interface PreflightResult {
+  ok: boolean;
+  blockers: { code: string; message: string }[];
+  warnings: { code: string; message: string }[];
+}
+
 export interface PublicSettings {
   maintenance: { enabled: boolean; message: string };
+  waiting_music?: WaitingMusicSettings;
   signups_enabled: boolean;
   announcement: { text: string; tone: "info" | "success" | "warn" } | null;
   support: { email: string; whatsapp: string };

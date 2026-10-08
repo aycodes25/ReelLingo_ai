@@ -1018,3 +1018,54 @@ details.danger-zone[open] { display: grid; gap: 10px; }
 @media (max-width: 900px) {
   .ministry-band .container { grid-template-columns: 1fr; }
 }
+
+/* Pricing cards: what the plan includes, in plain words */
+.plan > p.plan-local { min-height: 0; margin: -14px 0 10px; }
+.plan > p.plan-yearly { min-height: 0; margin: 0 0 14px; color: var(--teal); font-size: 13px; font-weight: 600; }
+.plan > p.plan-includes { min-height: 0; margin: 4px 0 16px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+
+/* ---------- Launching a project: 3D cube, steps, music ---------- */
+.cube-scene { width: 64px; height: 64px; perspective: 360px; flex: 0 0 auto; }
+.cube { position: relative; width: 100%; height: 100%; transform-style: preserve-3d; animation: cube-spin 4.5s linear infinite; }
+.cube-face { position: absolute; inset: 0; border: 2px solid rgba(255, 255, 255, .55); border-radius: 8px; background: linear-gradient(135deg, var(--primary), #7b5cff); opacity: .88; }
+.cube-front { transform: translateZ(32px); }
+.cube-back { transform: rotateY(180deg) translateZ(32px); }
+.cube-right { transform: rotateY(90deg) translateZ(32px); background: linear-gradient(135deg, #ff7a59, #ffb35c); }
+.cube-left { transform: rotateY(-90deg) translateZ(32px); background: linear-gradient(135deg, #ff7a59, #ffb35c); }
+.cube-top { transform: rotateX(90deg) translateZ(32px); background: linear-gradient(135deg, var(--teal), #5ee0cf); }
+.cube-bottom { transform: rotateX(-90deg) translateZ(32px); background: linear-gradient(135deg, var(--teal), #5ee0cf); }
+@keyframes cube-spin { from { transform: rotateX(-24deg) rotateY(0deg); } to { transform: rotateX(-24deg) rotateY(360deg); } }
+@media (prefers-reduced-motion: reduce) { .cube { animation-duration: 18s; } }
+
+.launch-panel { display: flex; align-items: center; gap: 22px; padding: 22px; border: 1px solid var(--line); border-radius: 14px; background: var(--white); }
+.launch-copy { display: grid; flex: 1; gap: 10px; min-width: 0; }
+.launch-copy > strong { color: var(--ink); font-size: 16px; }
+.launch-copy ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.launch-copy li { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
+.launch-copy li i { width: 14px; height: 14px; border: 2px solid var(--line); border-radius: 50%; }
+.launch-copy li.is-active { color: var(--ink); font-weight: 600; }
+.launch-copy li.is-done { color: var(--teal); }
+.launch-copy small { color: var(--muted); font-size: 12.5px; }
+.progress-track.is-indeterminate { position: relative; overflow: hidden; }
+.progress-track.is-indeterminate i { position: absolute; top: 0; bottom: 0; width: 38%; border-radius: inherit; animation: indeterminate 1.4s ease-in-out infinite; }
+@keyframes indeterminate { from { left: -40%; } to { left: 102%; } }
+
+.music-btn { display: inline-flex; align-items: center; gap: 8px; width: fit-content; min-height: 36px; padding: 6px 14px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink); background: var(--white); font-size: 13px; font-weight: 600; cursor: pointer; }
+.music-btn:hover { border-color: var(--primary); }
+.music-btn.is-playing { color: var(--primary); border-color: var(--primary); background: var(--lavender); }
+.music-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; }
+.music-bars b { width: 3px; height: 100%; border-radius: 2px; background: currentColor; animation: music-bar 1s ease-in-out infinite; transform-origin: bottom; }
+.music-bars b:nth-child(2) { animation-delay: .25s; }
+.music-bars b:nth-child(3) { animation-delay: .5s; }
+@keyframes music-bar { 0%, 100% { transform: scaleY(.3); } 50% { transform: scaleY(1); } }
+@media (prefers-reduced-motion: reduce) { .music-bars b { animation: none; } }
+
+.wait-row { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--line); }
+.wait-row .cube-scene { width: 44px; height: 44px; }
+.wait-row .cube-face { transform-origin: center; }
+.wait-row p { flex: 1 1 220px; margin: 0; color: var(--muted); font-size: 14px; }
+
+.preflight-block, .preflight-warn { display: flex; gap: 12px; margin-bottom: 14px; padding: 14px 16px; border-radius: 12px; font-size: 14px; }
+.preflight-block { border: 1px solid #f3b8b0; color: #8f2a1c; background: #fdecea; }
+.preflight-block p, .preflight-warn p { margin: 4px 0 0; }
+.preflight-warn { border: 1px solid #f0dc9a; color: #6d5410; background: #fff8e0; }

@@ -33,40 +33,40 @@ export const DEFAULT_PLANS = [
     minutes_per_month: 2, max_video_minutes: 3, voice_clone: false, watermark: true, priority: 0, max_targets: 1,
     lip_sync: false, api_access: false, team_seats: 1, saved_voices: 0, sort: 0,
     permissions: { ...ALL_ON, multi_speaker: false, formats: false, youtube: false, human_review: false, clips: false, youtube_languages: false },
-    features: ["Standard AI voices", "ReelLingo watermark", "SRT & VTT subtitles"],
+    features: ["Standard AI voices only", "ReelLingo watermark on your videos", "SRT & VTT subtitle files only"],
   },
   {
     code: "subtitles", name: "Subtitles", blurb: "Accurate subtitles in 50+ languages.", price_usd: 3, price_ngn: 4500, price_usd_yearly: 30, price_ngn_yearly: 45000,
     minutes_per_month: 5, max_video_minutes: 60, voice_clone: false, watermark: false, priority: 1, max_targets: 3,
     lip_sync: false, api_access: false, team_seats: 1, saved_voices: 0, sort: 1,
     permissions: { ...ALL_ON, multi_speaker: false, human_review: false, clips: false },
-    features: ["No watermark", "Burned-in caption styles", "SRT, VTT & styled subtitles", "3 languages per upload"],
+    features: ["No watermark", "Burned-in caption styles", "SRT, VTT & styled subtitles"],
   },
   {
     code: "starter", name: "Starter", blurb: "For hobbyists and TikTokers.", price_usd: 10, price_ngn: 15000, price_usd_yearly: 100, price_ngn_yearly: 150000,
     minutes_per_month: 16, max_video_minutes: 10, voice_clone: true, watermark: false, priority: 1, max_targets: 2,
     lip_sync: false, api_access: false, team_seats: 1, saved_voices: 0, sort: 2,
     permissions: { ...ALL_ON, multi_speaker: false, youtube: false, human_review: false },
-    features: ["Voice cloning", "No watermark", "2 languages per upload", "Burned-in captions", "Short clips add-on"],
+    features: ["Voice cloning (dub in your own voice)", "No watermark", "Burned-in captions", "Short clips for social media"],
   },
   {
     code: "creator", name: "Creator", blurb: "The sweet spot for YouTubers.", price_usd: 25, price_ngn: 38000, price_usd_yearly: 250, price_ngn_yearly: 380000,
     minutes_per_month: 40, max_video_minutes: 30, voice_clone: true, watermark: false, priority: 2, max_targets: 4,
     lip_sync: true, api_access: false, team_seats: 1, saved_voices: 1, sort: 3, featured: true, permissions: ALL_ON,
-    features: ["Premium voice cloning + saved voice", "Priority processing", "4 languages per upload", "Multi-speaker dubbing", "Publish to YouTube", "Human review & lip-sync add-ons"],
+    features: ["Premium voice cloning + 1 saved voice", "Priority processing (faster)", "Multi-speaker dubbing", "Publish straight to YouTube", "Human review & lip-sync add-ons"],
   },
   {
     code: "studio", name: "Studio", blurb: "For media houses and serious channels.", price_usd: 75, price_ngn: 115000, price_usd_yearly: 750, price_ngn_yearly: 1150000,
     minutes_per_month: 125, max_video_minutes: 60, voice_clone: true, watermark: false, priority: 3, max_targets: 10,
     lip_sync: true, api_access: true, team_seats: 5, saved_voices: 5, sort: 4, permissions: ALL_ON,
-    features: ["Lip-sync add-on", "Highest priority queue", "10 languages per upload", "Team workspace (5 seats)", "API access", "Dedicated WhatsApp support"],
+    features: ["Highest priority queue", "Team workspace (5 seats)", "API access", "Lip-sync add-on", "Dedicated WhatsApp support"],
   },
   {
     code: "ministry", name: "Church & Ministry", blurb: "Every sermon, in every language your congregation speaks.",
     price_usd: 150, price_ngn: 225000, price_usd_yearly: 1500, price_ngn_yearly: 2250000,
     minutes_per_month: 250, max_video_minutes: 120, voice_clone: true, watermark: false, priority: 3, max_targets: 5,
     lip_sync: true, api_access: false, team_seats: 5, saved_voices: 3, sort: 5, permissions: ALL_ON,
-    features: ["Sermons up to 2 hours", "English, French, Yoruba, Hausa & Igbo", "Pastor's saved voice", "Team workspace (5 seats)", "Human review by native speakers", "Short clips for social media"],
+    features: ["English, French, Yoruba, Hausa & Igbo", "Pastor's saved voice", "Team workspace (5 seats)", "Human review by native speakers", "Short clips for social media"],
   },
   {
     code: "agency", name: "Agency & Nollywood", blurb: "Distributors, studios and agencies with large catalogues.", price_usd: 0, price_ngn: 0,
@@ -204,17 +204,25 @@ export function normalizePlan(row) {
   };
   if (plan.code === "free" && config.freeMaxVideoMinutes !== null) plan.max_video_minutes = config.freeMaxVideoMinutes;
   plan.max_video_minutes = Math.min(plan.max_video_minutes, config.maxVideoMinutes);
-  plan.features = [...planHeadlines(plan), ...plan.features.filter((feature) => !/per month$|a month$|minutes per video$|per video$/i.test(feature))];
+  plan.features = [...planHeadlines(plan), ...plan.features.filter((feature) => !GENERATED_LINE.test(feature))];
   return plan;
 }
 
+// Lines an admin may have typed by hand that say the same thing the numbers already say (they'd appear twice, or disagree).
+const GENERATED_LINE = /per month$|a month$|minutes per video$|per video$|per upload$|^videos? up to|^each video|^sermons up to/i;
+
 /** The allowance lines are generated from the numbers so marketing copy can never disagree with the enforced limits. */
 function planHeadlines(plan) {
-  if (plan.contact_sales) return [`Videos up to ${plan.max_video_minutes} minutes`];
+  const length = plan.max_video_minutes;
+  const hours = length >= 120 && length % 60 === 0 ? ` (${length / 60} hours)` : "";
+  const videoLine = length <= 5 ? `Each video must be ${length} minute${length === 1 ? "" : "s"} or shorter` : `Each video can be up to ${length} minutes long${hours}`;
+  if (plan.contact_sales) return [videoLine];
   const subtitleMinutes = Math.round(plan.minutes_per_month / (config.minuteWeights.subtitles || 0.1));
+  const languages = Math.max(1, plan.max_targets);
   return [
-    `${plan.minutes_per_month} minutes of dubbing a month (or ${subtitleMinutes} of subtitles)`,
-    `Videos up to ${plan.max_video_minutes} minutes`,
+    `${plan.minutes_per_month} minutes of dubbing per month (or ${subtitleMinutes} minutes of subtitles)`,
+    videoLine,
+    `${languages} language${languages === 1 ? "" : "s"} per upload`,
   ];
 }
 

@@ -49,8 +49,24 @@ export function spitchVoiceFor(language, rank = 0, preferred = null) {
   return voices[rank % voices.length].id;
 }
 
+// Spitch refuses more than a few requests at once (Tier 1: 3). Every call in this server waits for a free slot, so
+// several videos and many lines can run together without ever going over.
+let openCalls = 0;
+const queue = [];
+async function inSpitchSlot(task) {
+  while (openCalls >= Math.max(1, config.spitchConcurrency)) await new Promise((resolve) => queue.push(resolve));
+  openCalls += 1;
+  try {
+    return await task();
+  } finally {
+    openCalls -= 1;
+    queue.shift()?.();
+  }
+}
+
 async function spitchFetch(path, body, label) {
-  return withRetries(async () => {
+  // A "busy" answer (429) is temporary, so it gets more patience than other errors: short, growing waits with a little jitter.
+  return withRetries(() => inSpitchSlot(async () => {
     const response = await fetch(`${config.spitchApiUrl}${path}`, {
       method: "POST",
       headers: { Authorization: `Bearer ${config.spitchApiKey}`, "Content-Type": "application/json" },
@@ -58,7 +74,7 @@ async function spitchFetch(path, body, label) {
     });
     if (!response.ok) throw await responseError(response, label);
     return response;
-  }, { label });
+  }), { label, attempts: 6, baseDelayMs: 1500 + Math.floor(Math.random() * 500), maxDelayMs: 12000 });
 }
 
 const words = (text) => String(text).trim().split(/\s+/).filter(Boolean).length;
@@ -113,7 +129,7 @@ async function mapLimited(items, limit, task) {
  */
 export async function spitchTranslateSegments(segments, target, { glossary = [] } = {}) {
   const fixed = glossary.filter((entry) => entry.translation && (!entry.target_language || entry.target_language === target));
-  return mapLimited(segments, 4, async (segment) => {
+  return mapLimited(segments, config.spitchConcurrency, async (segment) => {
     const source = segment.language && segment.language !== "und" ? segment.language : undefined;
     let text = segment.text?.trim() ? await spitchTranslateText(segment.text, target, source) : "";
     for (const entry of fixed) text = text.split(entry.term).join(entry.translation);
@@ -124,5 +140,5 @@ export async function spitchTranslateSegments(segments, target, { glossary = [] 
 
 /** Adds tone marks to every Yoruba line that doesn't already have them. */
 export async function toneMarkSegments(segments) {
-  return mapLimited(segments, 4, async (segment) => ({ ...segment, text: await addYorubaToneMarks(segment.text) }));
+  return mapLimited(segments, config.spitchConcurrency, async (segment) => ({ ...segment, text: await addYorubaToneMarks(segment.text) }));
 }
