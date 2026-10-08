@@ -5,7 +5,9 @@ import { refundRun } from "./minutes.js";
 import { expireStaleReviews } from "./reviews.js";
 import { runJob } from "./pipeline.js";
 import { deleteFiles, listFiles } from "./storage.js";
+import { purgeOldAudit } from "./audit.js";
 import { cleanupExpiredUploads } from "./uploads.js";
+import { purgeUploadCounters } from "./uploadgate.js";
 import { checkLowBalances } from "./usage.js";
 
 let running = 0;
@@ -70,6 +72,8 @@ export async function cleanupExpiredFiles(now = new Date()) {
   }
   if (expired) logger.info({ expired }, "Deleted files past the retention window");
   await cleanupExpiredUploads();
+  await purgeUploadCounters().catch((error) => logger.warn({ err: error }, "Upload counter cleanup failed"));
+  await purgeOldAudit().catch((error) => logger.warn({ err: error }, "Audit log cleanup failed"));
   // Hourly: email admins when a paid provider is running low (Admin → API usage → alert level).
   await checkLowBalances().catch((error) => logger.warn({ err: error }, "Low-balance check failed"));
   // Hourly: human reviews nobody picked up in time continue without review (and are refunded).

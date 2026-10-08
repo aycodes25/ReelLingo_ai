@@ -37,7 +37,7 @@ export const tusServer = new Server({
       if (!isAdminUser(user, profile)) {
         const blocked = await uploadBlocker({ user, teamId: await teamFromHeader(request.headers.get("x-workspace"), user.id) });
         if (blocked) throw { status_code: blocked.status, body: `${blocked.detail}\n` };
-        if (uploadsExceeded(user.id)) throw { status_code: 429, body: "You've started a lot of uploads in the last hour. Please try again shortly.\n" };
+        if (await uploadsExceeded(user.id)) throw { status_code: 429, body: "You've started a lot of uploads in the last hour. Please try again shortly.\n" };
       }
     }
     if (uploadId && request.method !== "POST") {

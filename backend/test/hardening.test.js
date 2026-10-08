@@ -62,7 +62,8 @@ const { ensureProfile, isAdminUser, planFor } = await import("../src/accounts.js
 const minutes = await import("../src/minutes.js");
 const { purgeJob } = await import("../src/jobfiles.js");
 const { recordUsage } = await import("../src/costs.js");
-const { uploadBlocker, resetUploadCounts } = await import("../src/uploadgate.js");
+const { uploadBlocker, resetUploadCounts, uploadsExceeded, purgeUploadCounters } = await import("../src/uploadgate.js");
+const { listAudit, purgeOldAudit, auditTriggersSql, AUDITED_TABLES } = await import("../src/audit.js");
 const { getRawPlan, listRawPlans } = await import("../src/plans.js");
 
 await database.initializeDatabase();
@@ -257,7 +258,7 @@ test("deleting a project gives the minutes back only if no paid work was done", 
 // ---------- Uploads are checked before the file is accepted ----------
 
 test("people who can't use minutes can't start uploads", async () => {
-  resetUploadCounts();
+  await resetUploadCounts();
   config.uploadsPerHour = 40;
   await ensureProfile("nominutes", "nominutes@example.com");
   await billing.activateSubscription("nominutes", "studio");
@@ -287,7 +288,7 @@ test("people who can't use minutes can't start uploads", async () => {
 });
 
 test("one person can't start unlimited uploads", async () => {
-  resetUploadCounts();
+  await resetUploadCounts();
   await ensureProfile("uploader", "uploader@example.com");
   await billing.activateSubscription("uploader", "studio");
   const key = (await createApiKey("uploader", "t")).key;
@@ -303,7 +304,7 @@ test("one person can't start unlimited uploads", async () => {
     assert.deepEqual(statuses, [201, 201, 429, 429]);
   } finally {
     config.uploadsPerHour = saved;
-    resetUploadCounts();
+    await resetUploadCounts();
   }
 });
 
@@ -516,4 +517,127 @@ test("single-line re-translations are capped per project", async () => {
   } finally {
     config.maxRetranslations = saved;
   }
+});
+
+// ---------- Gaps found in the second review ----------
+
+test("a failed project can only be retried a few times (admins aren't limited)", async () => {
+  await ensureProfile("retrier", "retrier@example.com");
+  await billing.activateSubscription("retrier", "studio");
+  const headers = { Authorization: `Bearer ${(await createApiKey("retrier", "t")).key}`, "Content-Type": "application/json" };
+  const job = await database.createJob({
+    user_id: "retrier", source_language: "yo", target_language: "en", input_storage_path: "uploads/never-there.mp4", options_json: { charge: minutes.newCharge(1, "job") },
+  });
+  // What the pipeline does when a run fails: the job is marked failed and the minutes go back.
+  const fail = async () => {
+    const latest = await database.getJob(job.id);
+    await minutes.refundRun(latest);
+    await database.updateJob(job.id, { status: "failed", error_message: "provider error" });
+  };
+  const retry = () => fetch(`${base}/jobs/${job.id}/retry`, { method: "POST", headers, body: "{}" });
+  const saved = config.maxRetries;
+  config.maxRetries = 2;
+  try {
+    await fail();
+    assert.equal((await retry()).status, 200);
+    await fail();
+    assert.equal((await retry()).status, 200);
+    await fail();
+    const refused = await retry();
+    assert.equal(refused.status, 409);
+    const body = await refused.json();
+    assert.equal(body.code, "retries");
+    assert.match(body.detail, /retried 2 times/);
+    assert.equal((await database.getJob(job.id)).status, "failed", "a refused retry changes nothing");
+    assert.equal((await database.getJob(job.id)).options_json.retries, 2);
+
+    // An admin can always retry.
+    await ensureProfile("boss", "boss@example.com");
+    await billing.activateSubscription("boss", "studio");
+    const admin = { Authorization: `Bearer ${(await createApiKey("boss", "retry")).key}`, "Content-Type": "application/json" };
+    config.maxRetries = 0;
+    const own = await database.createJob({
+      user_id: "boss", source_language: "yo", target_language: "en", input_storage_path: "uploads/never-there.mp4", options_json: { charge: minutes.newCharge(1, "job") },
+    });
+    await database.updateJob(own.id, { status: "failed" });
+    assert.equal((await fetch(`${base}/jobs/${own.id}/retry`, { method: "POST", headers: admin, body: "{}" })).status, 200);
+  } finally {
+    config.maxRetries = saved;
+  }
+});
+
+test("the upload limit is counted in the database, shared by every server, and old counters are cleaned up", async () => {
+  await resetUploadCounts();
+  const saved = config.uploadsPerHour;
+  config.uploadsPerHour = 2;
+  const now = Date.now();
+  try {
+    assert.deepEqual([await uploadsExceeded("counted", now), await uploadsExceeded("counted", now), await uploadsExceeded("counted", now)], [false, false, true]);
+    assert.equal((await one("SELECT value FROM app_settings WHERE key LIKE 'uploads:counted:%'")).value, "3", "the count is a database row, not memory");
+    assert.equal(await uploadsExceeded("someone-else", now), false, "people are counted separately");
+    assert.equal(await uploadsExceeded("counted", now + 3600 * 1000), false, "a new hour starts a new count");
+    const settings = await import("../src/settings.js");
+    await settings.loadSettings(); // reloads every saved setting; it must ignore the counter rows
+    assert.equal(config.uploadsPerHour, 40, "back to the default, because no admin saved a different limit");
+    config.uploadsPerHour = 2;
+    assert.equal(await purgeUploadCounters(now + 3 * 3600 * 1000), 3, "counters older than a couple of hours are removed");
+    assert.equal((await many("SELECT key FROM app_settings WHERE key LIKE 'uploads:%'")).length, 0);
+  } finally {
+    config.uploadsPerHour = saved;
+    await resetUploadCounts();
+  }
+});
+
+test("admins opening a customer's details or the payment list is logged, but ordinary lists are not", async () => {
+  await ensureProfile("boss", "boss@example.com");
+  await billing.activateSubscription("boss", "studio");
+  await ensureProfile("watched", "watched@example.com");
+  const admin = { Authorization: `Bearer ${(await createApiKey("boss", "views")).key}`, "Content-Type": "application/json" };
+  const count = async (needle) => (await listAudit({ limit: 500, search: needle })).length;
+
+  const before = await count("VIEW");
+  assert.equal((await fetch(`${base}/admin/users/watched`, { headers: admin })).status, 200);
+  assert.equal((await fetch(`${base}/admin/payments`, { headers: admin })).status, 200);
+  assert.equal((await fetch(`${base}/admin/users`, { headers: admin })).status, 200);
+  assert.equal((await fetch(`${base}/admin/plans`, { headers: admin })).status, 200);
+  const views = await listAudit({ limit: 500, search: "VIEW" });
+  assert.equal(views.length, before + 2, "only the customer's details and the payment list");
+  const opened = views.find((entry) => entry.action === "VIEW GET /admin/users/:userId");
+  assert.equal(opened.admin_email, "boss@example.com");
+  assert.equal(JSON.parse(opened.target).userId, "watched");
+  assert.ok(views.some((entry) => entry.action === "VIEW GET /admin/payments"));
+  const settled = await count("VIEW");
+  assert.equal((await fetch(`${base}/admin/users/nobody-here`, { headers: admin })).status >= 400, true);
+  assert.equal(await count("VIEW"), settled, "a failed look-up isn't logged");
+});
+
+test("the audit log deletes old entries, and keeps text it can't read instead of losing it", async () => {
+  await query("INSERT INTO admin_audit (admin_id, admin_email, action, target, details, created_at) VALUES ('x', 'old@example.com', 'PUT /old', '', '{}', '2019-01-01 00:00:00')");
+  await query("INSERT INTO admin_audit (admin_id, admin_email, action, target, details) VALUES ('database', 'db', 'UPDATE plans', 'starter', '{\"before\": {\"price')");
+  const saved = config.auditRetentionDays;
+  config.auditRetentionDays = 365;
+  try {
+    assert.ok(await purgeOldAudit() >= 1);
+    assert.equal((await listAudit({ search: "old@example.com" })).length, 0);
+    const truncated = (await listAudit({ search: "UPDATE plans" }))[0];
+    assert.match(truncated.details.raw, /before/, "a cut-off row is still shown, as plain text");
+  } finally {
+    config.auditRetentionDays = saved;
+  }
+});
+
+test("changes made directly in the database are covered by the optional trigger file", () => {
+  const sql = auditTriggersSql();
+  for (const { table } of AUDITED_TABLES) assert.match(sql, new RegExp(`CREATE TRIGGER reellingo_audit AFTER .* ON public.${table} `));
+  assert.match(sql, /application_name', true\) = 'reellingo-api'/, "the app's own (already logged) changes are skipped");
+  assert.match(sql, /AFTER UPDATE OF is_admin, disabled ON public.profiles/, "profile edits are only logged when admin or suspension changes");
+});
+
+test("Stripe checkout never accepts discount codes, so every sale is at full price", async () => {
+  const stripe = mock("https://api.stripe.com/v1/checkout/sessions", () => json({ id: "cs_test", url: "https://checkout.stripe.test/x" }));
+  await ensureProfile("shopper", "shopper@example.com");
+  await billing.createCheckout({ provider: "stripe", user: { id: "shopper", email: "shopper@example.com" }, billingId: "shopper", planCode: "starter" });
+  const body = decodeURIComponent(stripe.calls.at(-1).options.body);
+  assert.ok(!/allow_promotion_codes|discounts/.test(body), "no coupon field is sent");
+  assert.match(body, /unit_amount\]=1000/);
 });

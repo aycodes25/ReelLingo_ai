@@ -77,6 +77,10 @@ export const config = {
   jobStaleMs: number("JOB_STALE_MS", 120000),
   maxJobAttempts: number("MAX_JOB_ATTEMPTS", 3),
   maxRedubs: number("MAX_REDUBS", 5),
+  // Manual "Retry" presses allowed per failed project (a failed run is refunded, so unlimited retries would be free provider spend).
+  maxRetries: number("MAX_RETRIES", 3),
+  // How long the admin audit log keeps entries.
+  auditRetentionDays: number("AUDIT_RETENTION_DAYS", 730),
 
   // Retention
   retentionDays: number("RETENTION_DAYS", 30),

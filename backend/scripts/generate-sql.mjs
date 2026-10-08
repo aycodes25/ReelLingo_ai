@@ -7,12 +7,14 @@ import { fileURLToPath } from "node:url";
 process.env.DATABASE_URL = "sqlite:///:memory:";
 const { postgresSchemaSql, SCHEMA } = await import("../src/db.js");
 const { planSeedSql } = await import("../src/plans.js");
+const { auditTriggersSql } = await import("../src/audit.js");
 
 const directory = join(dirname(fileURLToPath(import.meta.url)), "..", "sql");
 mkdirSync(directory, { recursive: true });
 const tables = SCHEMA.map((table) => `'${table.name}'`).join(", ");
 
 writeFileSync(join(directory, "schema.sql"), postgresSchemaSql(planSeedSql()));
+writeFileSync(join(directory, "audit-triggers.sql"), auditTriggersSql());
 
 writeFileSync(join(directory, "check.sql"), `-- Read-only check. Changes nothing.
 -- Supabase dashboard → SQL Editor → New query → paste → Run.
@@ -29,4 +31,4 @@ WHERE n.nspname = 'public' AND c.relkind = 'r'
 ORDER BY row_level_security DESC, table_name;
 `);
 
-console.log(`Wrote ${join(directory, "schema.sql")} and check.sql (${SCHEMA.length} tables).`);
+console.log(`Wrote ${join(directory, "schema.sql")}, audit-triggers.sql and check.sql (${SCHEMA.length} tables).`);

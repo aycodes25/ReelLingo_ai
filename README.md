@@ -102,6 +102,7 @@ The backend **never changes your Supabase database on its own**. When it starts 
 |:---|:---|
 | [`backend/sql/check.sql`](backend/sql/check.sql) | Read-only. Lists your tables and whether Row Level Security is on. |
 | [`backend/sql/schema.sql`](backend/sql/schema.sql) | Creates missing ReelLingo tables and columns, turns Row Level Security on, and blocks Supabase's public API roles from these tables. Safe to run more than once; never deletes data. |
+| [`backend/sql/audit-triggers.sql`](backend/sql/audit-triggers.sql) | Optional. Also records changes made directly in the Supabase table editor or SQL editor in Admin → Audit log (changes made by the app are already logged and are skipped). Run it after `schema.sql`. |
 
 To run one: Supabase dashboard → **SQL Editor** → **New query** → paste the file → **Run**.
 If you store videos in Supabase Storage, make sure the `reellingo-videos` bucket is **private**. Moving to Cloudflare R2? `npm --prefix backend run storage:copy-to-r2` copies existing files across (it only reads from Supabase).

@@ -1,5 +1,6 @@
 import { getProfile, isAdminUser, planFor } from "./accounts.js";
 import { config } from "./config.js";
+import { many, one, query } from "./db.js";
 import { freeTierStatus } from "./minutes.js";
 import { getMembership } from "./teams.js";
 import { userBudgetStatus } from "./usage.js";
@@ -43,22 +44,36 @@ export async function teamFromHeader(value, userId) {
   return Number.isInteger(teamId) && await getMembership(teamId, userId) ? teamId : null;
 }
 
-// Resumable uploads started per person in the last hour. Kept in memory: it is a brake, not a bill.
-const started = new Map();
+// Resumable uploads started per person this hour. The count lives in the database (app_settings rows named
+// "uploads:<user>:<hour>"), so every server and worker shares it and a restart doesn't reset it.
+const COUNTER_PREFIX = "uploads:";
 
-/** True when this person has started too many uploads in the last hour (and counts this one if not). */
-export function uploadsExceeded(userId, now = Date.now()) {
-  const recent = (started.get(userId) || []).filter((time) => now - time < 3600 * 1000);
-  if (recent.length >= config.uploadsPerHour) {
-    started.set(userId, recent);
-    return true;
-  }
-  recent.push(now);
-  started.set(userId, recent);
-  if (started.size > 20000) started.delete(started.keys().next().value);
-  return false;
+/** Counts this upload and returns true when the person has started too many this hour. */
+export async function uploadsExceeded(userId, now = Date.now()) {
+  const key = `${COUNTER_PREFIX}${userId}:${Math.floor(now / 3600000)}`;
+  const row = await one(
+    `INSERT INTO app_settings (key, value, updated_at) VALUES ($1, '1', CURRENT_TIMESTAMP)
+     ON CONFLICT (key) DO UPDATE SET value = CAST(CAST(app_settings.value AS INTEGER) + 1 AS TEXT), updated_at = CURRENT_TIMESTAMP
+     RETURNING value`,
+    [key],
+  );
+  return Number(row?.value || 1) > config.uploadsPerHour;
 }
 
-export function resetUploadCounts() {
-  started.clear();
+/** Deletes the hourly counters older than a couple of hours (called from the worker's hourly cleanup). */
+export async function purgeUploadCounters(now = Date.now()) {
+  const current = Math.floor(now / 3600000);
+  const rows = await many("SELECT key FROM app_settings WHERE key LIKE $1", [`${COUNTER_PREFIX}%`]);
+  let removed = 0;
+  for (const row of rows) {
+    if (Number(String(row.key).split(":").pop()) < current - 1) {
+      await query("DELETE FROM app_settings WHERE key = $1", [row.key]);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
+export async function resetUploadCounts() {
+  await query("DELETE FROM app_settings WHERE key LIKE $1", [`${COUNTER_PREFIX}%`]);
 }

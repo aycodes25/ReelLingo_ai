@@ -522,7 +522,12 @@ router.post("/jobs/:jobId/retry", authenticate, asyncRoute(async (request, respo
   if (job.status !== "failed") throw new HttpError(409, "Only failed projects can be retried.");
   if (job.files_expired_at) throw new HttpError(409, "The original upload has expired. Please upload the video again.");
   if (!job.input_storage_path && !job.source_url) throw new HttpError(409, "The original upload is missing. Please upload the video again.");
-  const options = request.body?.trim_to_fit ? { ...job.options_json, trim_to_fit: true } : job.options_json;
+  // A failed run is refunded in full, so each retry is paid work that may be thrown away again at our cost.
+  const retries = Number(job.options_json?.retries || 0);
+  if (!request.user.isAdmin && retries >= config.maxRetries) {
+    throw new HttpError(409, `This project has failed and been retried ${retries} time${retries === 1 ? "" : "s"}. Please contact ${config.supportEmail} and we'll look at it for you.`, { code: "retries" });
+  }
+  const options = { ...job.options_json, retries: retries + 1, ...(request.body?.trim_to_fit ? { trim_to_fit: true } : {}) };
   // The failed attempt gave its minutes back, so retrying pays for the run again.
   await chargeRun(request, { ...job, options_json: options });
   response.json(await jobOutput(await updateJob(job.id, { status: "queued", current_step: "queued", attempts: 0, error_message: null, options_json: options })));

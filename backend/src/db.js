@@ -261,7 +261,7 @@ let lockPool;
  */
 export async function withDbLock(key, task, { timeoutMs = 30_000 } = {}) {
   if (!isPostgres) return task();
-  lockPool ||= new Pool({ connectionString: config.databaseUrl, ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false } : undefined, max: 5 });
+  lockPool ||= new Pool({ connectionString: config.databaseUrl, application_name: "reellingo-api", ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false } : undefined, max: 5 });
   const client = await lockPool.connect();
   let locked = false;
   try {
@@ -394,7 +394,7 @@ async function migrate() {
 
 export async function initializeDatabase() {
   if (isPostgres) {
-    pool = new Pool({ connectionString: config.databaseUrl, ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false } : undefined });
+    pool = new Pool({ connectionString: config.databaseUrl, application_name: "reellingo-api", ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false } : undefined });
   } else {
     databaseFile = config.databaseUrl.startsWith("sqlite:///")
       ? resolve(config.databaseUrl.slice("sqlite:///".length))
