@@ -185,6 +185,8 @@ export async function jobOutput(job, { detail = true } = {}) {
     // Minutes this run of the project uses (re-dubs and clips are separate runs).
     minutes_charged: options.charge?.minutes ?? null,
     clips_pending: options.task === "clips",
+    captions_pending: options.task === "captions",
+    caption_style: options.caption_style || null,
     youtube_languages: Array.isArray(options.youtube_languages) ? options.youtube_languages : [],
     human_reviewed_at: options.human_reviewed_at || null,
     review_note: options.review_note || null,

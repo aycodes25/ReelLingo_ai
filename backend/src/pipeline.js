@@ -18,7 +18,7 @@ import { alertAdminsOnce, friendlyError } from "./friendly.js";
 import { ensureCharged, jobMinutes, lineHash, newCharge, NotEnoughMinutes, perMinuteWeight, refundRun, secondsAffordable } from "./minutes.js";
 import { notifyJob } from "./notify.js";
 import {
-  assertAudibleAudio, displaySize, exportAudioOnly, generateSrt, generateVtt, mergeAudioVideo, writeAss, ASPECTS, aspectSize, encodeAudio,
+  CAPTION_STYLES, assertAudibleAudio, displaySize, exportAudioOnly, generateSrt, generateVtt, mergeAudioVideo, writeAss, ASPECTS, aspectSize, encodeAudio,
 } from "./render.js";
 import { openReviewTask } from "./reviews.js";
 import { mixDubWithBackground, separateBackground } from "./separation.js";
@@ -180,6 +180,7 @@ export async function processJob(job, { localInputPath = null } = {}) {
     }
     const options = job.options_json || {};
     if (options.task === "clips") return await makeClips(job, workdir);
+    if (options.task === "captions") return await makeCaptionedVideo(job, workdir);
     const subtitlesOnly = options.mode === "subtitles";
 
     let inputPath;
@@ -423,6 +424,13 @@ async function failJob(job, error, notes = []) {
       processing_note: `Short clips could not be made: ${message}${refundNote}`,
     });
   }
+  if (latest.options_json?.task === "captions") {
+    // The finished video is untouched: only the extra render failed, so the project stays finished.
+    return updateJob(job.id, {
+      status: "done", current_step: "done", heartbeat_at: null, options_json: afterCaptionTask(latest.options_json),
+      processing_note: `Subtitles could not be added to the video: ${message}`,
+    });
+  }
   const failed = await updateJob(job.id, {
     status: "failed",
     error_message: error instanceof NotEnoughMinutes ? message : `${message}${refundNote}`,
@@ -481,6 +489,60 @@ async function finishSubtitles(job, { inputPath, info, isAudioOnly, translated, 
   const finished = await getJob(job.id);
   await notifyJob(finished, "done");
   return finished;
+}
+
+/** The project's options once an add-on task is over: no task marker, and the real charge for the dub is back in place. */
+function afterCaptionTask(options) {
+  const { task, pre_task_charge: charge, ...rest } = options;
+  return { ...rest, charge: charge ?? undefined };
+}
+
+/**
+ * "Download video with subtitles": burns the project's subtitles into the finished video so they show while it plays,
+ * in any player, on any phone, with no separate file. It doesn't re-dub anything and uses no minutes.
+ */
+async function makeCaptionedVideo(job, workdir) {
+  const step = (current_step) => updateJob(job.id, { status: "processing", current_step, error_message: null });
+  try {
+    const options = job.options_json || {};
+    const style = CAPTION_STYLES[options.caption_style] ? options.caption_style : "classic";
+    const segments = job.translated_segments_json || [];
+    if (!segments.length) throw new Error("This project has no subtitles to add.");
+    const outputs = job.outputs_json || [];
+    // Put the subtitles on the finished (dubbed) video. Subtitles-only projects use the original video.
+    const dubbed = outputs.find((output) => output.kind === "lipsync") || outputs.find((output) => output.kind === "video");
+    let sourcePath = dubbed?.path;
+    let watermark = false; // the dubbed video already carries the plan's watermark
+    if (!sourcePath) {
+      if (!job.input_storage_path || job.files_expired_at) throw new Error("The video for this project is no longer stored.");
+      sourcePath = job.input_storage_path;
+      watermark = Boolean(options.watermark);
+    }
+    await step("rendering");
+    const videoPath = await downloadFile(sourcePath, join(workdir, "source-video.mp4"));
+    const info = await getMediaInfo(videoPath);
+    const assPath = await writeAss(join(workdir, "captions.ass"), segments, { ...displaySize(info), style });
+    const rendered = join(workdir, "with-subtitles.mp4");
+    // The picture is re-drawn with the subtitles on it; the sound is kept as it is.
+    await mergeAudioVideo(videoPath, videoPath, rendered, { watermark, assPath });
+    const version = Date.now().toString(36);
+    const stored = await uploadFile(`jobs/${job.id}/captioned-${version}.mp4`, rendered, "video/mp4");
+    const latest = await getJob(job.id);
+    const previous = (latest.outputs_json || []).filter((output) => output.kind === "captioned");
+    await updateJob(job.id, {
+      outputs_json: [
+        ...(latest.outputs_json || []).filter((output) => output.kind !== "captioned"),
+        { kind: "captioned", style, label: "Video with subtitles on screen", path: stored },
+      ],
+      options_json: afterCaptionTask(latest.options_json),
+      status: "done", current_step: "done", heartbeat_at: null,
+      processing_note: "Your video with subtitles on screen is ready.",
+    });
+    if (previous.length) await deleteFiles(previous.map((output) => output.path)).catch(() => undefined);
+    return getJob(job.id);
+  } catch (error) {
+    return failJob(job, error);
+  }
 }
 
 /** Short clips: 3-5 vertical, captioned highlights cut from the finished dub. */

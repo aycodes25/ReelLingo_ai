@@ -577,6 +577,30 @@ router.post("/jobs/:jobId/clips", authenticate, asyncRoute(async (request, respo
 }));
 
 /**
+ * Puts the subtitles on the video itself (burned in), so they show while it plays in any player. It works on the
+ * finished project, even if no captions were chosen at upload, re-dubs nothing and uses no minutes.
+ */
+router.post("/jobs/:jobId/captions", authenticate, asyncRoute(async (request, response) => {
+  const job = await loadAccessibleJob(request);
+  if (job.status !== "done") throw new HttpError(409, "Subtitles can be put on the video once the project has finished.");
+  if (job.media_type === "audio") throw new HttpError(400, "Audio files have no picture to put subtitles on.");
+  if (job.files_expired_at) throw new HttpError(409, "This project's files have expired.");
+  if (!job.translated_segments_json?.length) throw new HttpError(409, "This project has no subtitles yet.");
+  await requirePlanPermission(request, job, "featureCaptions", "captions", "Subtitles on the video");
+  const style = CAPTION_STYLES[request.body?.style] ? request.body.style : "classic";
+  const renders = Number(job.options_json?.caption_renders || 0);
+  if (!request.user.isAdmin && renders >= config.maxCaptionRenders) {
+    throw new HttpError(429, `Subtitles have been added to this video ${renders} times already. Use the last version, or contact ${config.supportEmail}.`, { code: "caption_renders" });
+  }
+  const options = {
+    ...job.options_json, task: "captions", caption_style: style, caption_renders: renders + 1,
+    // A zero-minute charge of its own keeps this render from ever touching the minutes the dub used.
+    pre_task_charge: job.options_json?.charge ?? null, charge: newCharge(0, "captions"),
+  };
+  response.status(202).json(await jobOutput(await updateJob(job.id, { status: "queued", current_step: "queued", attempts: 0, error_message: null, options_json: options })));
+}));
+
+/**
  * Adds this dub's language to one of the creator's existing YouTube videos: subtitles plus a translated title and
  * description. The dubbed audio track is added in YouTube Studio (YouTube's API doesn't accept audio tracks).
  */

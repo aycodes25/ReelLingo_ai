@@ -79,6 +79,8 @@ export const config = {
   maxRedubs: number("MAX_REDUBS", 5),
   // Manual "Retry" presses allowed per failed project (a failed run is refunded, so unlimited retries would be free provider spend).
   maxRetries: number("MAX_RETRIES", 3),
+  // How many times subtitles can be put on one finished video (each is a video render, which costs server time, not minutes).
+  maxCaptionRenders: number("MAX_CAPTION_RENDERS", 6),
   // Refuse to start a video (with a clear message) when a service it needs has run out of credit.
   blockOnEmptyProvider: process.env.BLOCK_ON_EMPTY_PROVIDER !== "false",
   // How many requests may be open to Spitch at once. Spitch's Tier 1 allows 3; more are refused with "concurrency_limit_exceeded".
