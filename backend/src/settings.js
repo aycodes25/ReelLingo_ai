@@ -41,6 +41,10 @@ export const SETTINGS = [
   { key: "max_video_minutes", field: "maxVideoMinutes", type: "number", min: 1, max: 600, group: "Limits", label: "Longest video any plan can upload (minutes)", help: "The Church & Ministry plan allows 120-minute sermons, so keep this at 120 or more." },
   { key: "max_redubs", field: "maxRedubs", type: "number", min: 0, max: 100, group: "Limits", label: "Re-dubs allowed per project" },
   { key: "retention_days", field: "retentionDays", type: "number", min: 1, max: 3650, group: "Limits", label: "Delete project files after (days)" },
+  { key: "uploads_per_hour", field: "uploadsPerHour", type: "number", min: 1, max: 10000, group: "Limits", label: "Max resumable uploads started per user per hour" },
+  { key: "signup_rate_limit_per_hour", field: "signupRateLimitPerHour", type: "number", min: 1, max: 10000, group: "Limits", label: "Max sign-ups per internet address per hour", help: "Stops one person opening many free accounts. Offices and campuses share one address, so don't set this too low." },
+  { key: "max_retranslations", field: "maxRetranslations", type: "number", min: 0, max: 1000, group: "Limits", label: "Single-line re-translations allowed per project" },
+  { key: "require_confirmed_email", field: "requireConfirmedEmail", type: "bool", group: "Limits", label: "Free dubbing needs a confirmed email address", help: "Also turn on \"Confirm email\" in Supabase → Authentication, or this has nothing to check." },
   { key: "job_rate_limit_per_hour", field: "jobRateLimitPerHour", type: "number", min: 1, max: 10000, group: "Limits", label: "Max new jobs per user per hour" },
 
   // Pricing: how minutes are used, and the free-tier safety limit.

@@ -205,7 +205,6 @@ export interface Plan {
   price_usd_yearly: number;
   price_ngn_yearly: number;
   minutes_per_month: number;
-  videos_per_month: number;
   max_video_minutes: number;
   voice_clone: boolean;
   watermark: boolean;

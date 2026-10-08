@@ -2,7 +2,8 @@ import express from "express";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activateSubscription } from "../billing.js";
+import { activateSubscription, approvePayment } from "../billing.js";
+import { auditAdminChanges, listAudit } from "../audit.js";
 import { jobCosts } from "../costs.js";
 import { getJob, updateJob } from "../database.js";
 import { dbTime, many } from "../db.js";
@@ -13,8 +14,8 @@ import {
 import { config } from "../config.js";
 import { purgeJob } from "../jobfiles.js";
 import { ensureCharged, freeTierStatus, NotEnoughMinutes } from "../minutes.js";
-import { applyRecommendedPricing, createPlan, DEFAULT_PACKS, deletePlan, getPlan, listPacks, listRawPlans, PERMISSIONS, savePacks, updatePlan } from "../plans.js";
-import { profitReport } from "../profit.js";
+import { applyRecommendedPricing, createPlan, DEFAULT_PACKS, deletePlan, getPlan, getRawPlan, listPacks, listRawPlans, PERMISSIONS, savePacks, updatePlan } from "../plans.js";
+import { planProfitWarnings, profitReport } from "../profit.js";
 import { adminReviewOverview, markReviewerPaid, setReviewer } from "../reviews.js";
 import { createVoiceSample, listVoiceTests, rateVoiceTest, voiceLabOptions } from "../voicelab.js";
 import { planFor } from "../accounts.js";
@@ -24,7 +25,7 @@ import {
 } from "../usage.js";
 
 const router = express.Router();
-router.use("/admin", authenticate, requireAdmin);
+router.use("/admin", authenticate, requireAdmin, auditAdminChanges);
 
 // Naira→USD rate for margin estimates comes from Admin → Settings (NGN_PER_USD in .env by default).
 
@@ -230,12 +231,27 @@ router.get("/admin/plans", action(async (_request, response) => {
   response.json({ plans: plans.map((plan) => ({ ...plan, subscribers: counts.get(plan.code) || 0 })), permissions: PERMISSIONS, max_video_minutes: config.maxVideoMinutes });
 }));
 
+/** A plan that could lose money at the worst case is only saved when the admin confirms it (confirm_loss: true). */
+function assertProfitable(request, plan) {
+  if (request.body?.confirm_loss === true) return;
+  const warnings = planProfitWarnings(plan);
+  if (warnings.length) {
+    throw new HttpError(409, `This plan could lose money: ${warnings.join(" ")} Change the price or minutes, or save it anyway.`, { code: "unprofitable", warnings });
+  }
+}
+
 router.post("/admin/plans", action(async (request, response) => {
+  assertProfitable(request, request.body || {});
   response.status(201).json(await createPlan(request.body || {}));
 }));
 
 router.put("/admin/plans/:code", action(async (request, response) => {
-  response.json(await updatePlan(String(request.params.code), request.body || {}));
+  const code = String(request.params.code);
+  const before = await getRawPlan(code);
+  if (!before) throw new HttpError(404, "Plan not found.");
+  assertProfitable(request, { ...before, ...(request.body || {}) });
+  response.locals.audit = { before };
+  response.json(await updatePlan(code, request.body || {}));
 }));
 
 router.delete("/admin/plans/:code", action(async (request, response) => {
@@ -258,6 +274,7 @@ router.get("/admin/packs", action(async (_request, response) => {
 }));
 
 router.put("/admin/packs", action(async (request, response) => {
+  response.locals.audit = { before: await listPacks() };
   response.json({ packs: await savePacks(request.body?.packs, request.userId) });
 }));
 
@@ -294,6 +311,8 @@ router.get("/admin/settings", action(async (_request, response) => {
 }));
 
 router.put("/admin/settings", action(async (request, response) => {
+  const changing = new Set(Object.keys(request.body || {}));
+  response.locals.audit = { before: Object.fromEntries(listSettings().filter((setting) => changing.has(setting.key)).map((setting) => [setting.key, setting.value])) };
   response.json(await updateSettings(request.body || {}, request.userId));
 }));
 
@@ -349,6 +368,18 @@ router.delete("/admin/teams/:teamId", action(async (request, response) => {
 
 router.get("/admin/payments", action(async (request, response) => {
   response.json(await listAllPayments({ status: String(request.query.status || "") }));
+}));
+
+/** Accepts a payment that was held because the provider collected less than the price (for example a discount). */
+router.post("/admin/payments/:reference/approve", action(async (request, response) => {
+  response.json(await approvePayment(String(request.params.reference)));
+}));
+
+// ---------- Audit trail ----------
+router.get("/admin/audit", action(async (request, response) => {
+  response.json(await listAudit({
+    limit: Math.min(Math.max(Number(request.query.limit) || 100, 1), 500), offset: Math.max(Number(request.query.offset) || 0, 0), search: String(request.query.q || ""),
+  }));
 }));
 
 export default router;

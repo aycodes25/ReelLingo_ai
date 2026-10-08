@@ -62,7 +62,7 @@ export const SCHEMA = [
     columns: [
       ["id", "id"], ["code", "text", "NOT NULL UNIQUE"], ["name", "text", "NOT NULL"], ["blurb", "text"],
       ["price_usd", "real", "NOT NULL DEFAULT 0"], ["price_ngn", "int", "NOT NULL DEFAULT 0"],
-      ["videos_per_month", "int", "NOT NULL DEFAULT 1"], ["max_video_minutes", "int", "NOT NULL DEFAULT 3"],
+      ["max_video_minutes", "int", "NOT NULL DEFAULT 3"],
       ["voice_clone", "bool"], ["watermark", "bool"], ["priority", "int", "NOT NULL DEFAULT 0"], ["max_targets", "int", "NOT NULL DEFAULT 1"],
       ["lip_sync", "bool"], ["api_access", "bool"], ["team_seats", "int", "NOT NULL DEFAULT 1"], ["saved_voices", "int", "NOT NULL DEFAULT 0"],
       ["features_json", "text"], ["sort", "int", "NOT NULL DEFAULT 0"], ["public", "bool", "true"],
@@ -74,8 +74,8 @@ export const SCHEMA = [
     name: "subscriptions",
     columns: [
       ["id", "id"], ["user_id", "text", "NOT NULL UNIQUE"], ["tier", "text", "NOT NULL DEFAULT 'free'"],
-      ["videos_used_this_month", "int", "NOT NULL DEFAULT 0"], ["max_video_minutes", "int", "NOT NULL DEFAULT 3"],
-      ["max_videos_per_month", "int", "NOT NULL DEFAULT 1"], ["status", "text", "NOT NULL DEFAULT 'active'"],
+      ["max_video_minutes", "int", "NOT NULL DEFAULT 3"],
+      ["status", "text", "NOT NULL DEFAULT 'active'"],
       ["provider", "text"], ["provider_ref", "text"], ["provider_customer", "text"], ["current_period_end", "time"],
       ["cancel_at_period_end", "bool"], ["updated_at", "time"], ["overrides_json", "text"], ["billing_cycle", "text"],
     ],
@@ -199,6 +199,16 @@ export const SCHEMA = [
       ["id", "id"], ["language", "text", "NOT NULL"], ["engine", "text", "NOT NULL"], ["voice", "text"], ["text", "text", "NOT NULL"],
       ["audio_path", "text"], ["rating", "int"], ["notes", "text"], ["created_by", "text"], ["created_at", "time", NOW],
     ],
+  },
+  {
+    // Who changed what in the admin area. Optional: the app runs without it, but changes then go unrecorded.
+    name: "admin_audit",
+    optional: true,
+    columns: [
+      ["id", "id"], ["admin_id", "text"], ["admin_email", "text"], ["action", "text", "NOT NULL"], ["target", "text"], ["details", "text"],
+      ["created_at", "time", NOW],
+    ],
+    indexes: ["CREATE INDEX IF NOT EXISTS admin_audit_created ON admin_audit (created_at)"],
   },
   {
     name: "app_settings",
@@ -342,7 +352,12 @@ async function verifyPostgresSchema() {
   for (const table of SCHEMA) {
     const present = await existingColumns(table.name);
     if (!present.size) {
-      missing.push(`table ${table.name}`);
+      if (table.optional) {
+        const { logger } = await import("./logger.js");
+        logger.warn(`The optional table ${table.name} doesn't exist yet. Run backend/sql/schema.sql in the Supabase SQL Editor to switch it on.`);
+      } else {
+        missing.push(`table ${table.name}`);
+      }
       continue;
     }
     for (const [name] of table.columns) if (!present.has(name)) missing.push(`column ${table.name}.${name}`);

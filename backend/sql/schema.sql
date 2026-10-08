@@ -108,7 +108,6 @@ CREATE TABLE IF NOT EXISTS public.plans (
   blurb TEXT,
   price_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
   price_ngn BIGINT NOT NULL DEFAULT 0,
-  videos_per_month BIGINT NOT NULL DEFAULT 1,
   max_video_minutes BIGINT NOT NULL DEFAULT 3,
   voice_clone BOOLEAN NOT NULL DEFAULT FALSE,
   watermark BOOLEAN NOT NULL DEFAULT FALSE,
@@ -132,7 +131,6 @@ ALTER TABLE public.plans ADD COLUMN IF NOT EXISTS name TEXT;
 ALTER TABLE public.plans ADD COLUMN IF NOT EXISTS blurb TEXT;
 ALTER TABLE public.plans ADD COLUMN IF NOT EXISTS price_usd DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE public.plans ADD COLUMN IF NOT EXISTS price_ngn BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE public.plans ADD COLUMN IF NOT EXISTS videos_per_month BIGINT NOT NULL DEFAULT 1;
 ALTER TABLE public.plans ADD COLUMN IF NOT EXISTS max_video_minutes BIGINT NOT NULL DEFAULT 3;
 ALTER TABLE public.plans ADD COLUMN IF NOT EXISTS voice_clone BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE public.plans ADD COLUMN IF NOT EXISTS watermark BOOLEAN NOT NULL DEFAULT FALSE;
@@ -158,9 +156,7 @@ CREATE TABLE IF NOT EXISTS public.subscriptions (
   id BIGSERIAL PRIMARY KEY,
   user_id TEXT NOT NULL UNIQUE,
   tier TEXT NOT NULL DEFAULT 'free',
-  videos_used_this_month BIGINT NOT NULL DEFAULT 0,
   max_video_minutes BIGINT NOT NULL DEFAULT 3,
-  max_videos_per_month BIGINT NOT NULL DEFAULT 1,
   status TEXT NOT NULL DEFAULT 'active',
   provider TEXT,
   provider_ref TEXT,
@@ -173,9 +169,7 @@ CREATE TABLE IF NOT EXISTS public.subscriptions (
 );
 ALTER TABLE public.subscriptions ADD COLUMN IF NOT EXISTS user_id TEXT UNIQUE;
 ALTER TABLE public.subscriptions ADD COLUMN IF NOT EXISTS tier TEXT NOT NULL DEFAULT 'free';
-ALTER TABLE public.subscriptions ADD COLUMN IF NOT EXISTS videos_used_this_month BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE public.subscriptions ADD COLUMN IF NOT EXISTS max_video_minutes BIGINT NOT NULL DEFAULT 3;
-ALTER TABLE public.subscriptions ADD COLUMN IF NOT EXISTS max_videos_per_month BIGINT NOT NULL DEFAULT 1;
 ALTER TABLE public.subscriptions ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
 ALTER TABLE public.subscriptions ADD COLUMN IF NOT EXISTS provider TEXT;
 ALTER TABLE public.subscriptions ADD COLUMN IF NOT EXISTS provider_ref TEXT;
@@ -534,6 +528,26 @@ ALTER TABLE public.voice_tests ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ N
 ALTER TABLE public.voice_tests ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.voice_tests FROM anon, authenticated;
 
+-- admin_audit
+CREATE TABLE IF NOT EXISTS public.admin_audit (
+  id BIGSERIAL PRIMARY KEY,
+  admin_id TEXT,
+  admin_email TEXT,
+  action TEXT NOT NULL,
+  target TEXT,
+  details TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+ALTER TABLE public.admin_audit ADD COLUMN IF NOT EXISTS admin_id TEXT;
+ALTER TABLE public.admin_audit ADD COLUMN IF NOT EXISTS admin_email TEXT;
+ALTER TABLE public.admin_audit ADD COLUMN IF NOT EXISTS action TEXT;
+ALTER TABLE public.admin_audit ADD COLUMN IF NOT EXISTS target TEXT;
+ALTER TABLE public.admin_audit ADD COLUMN IF NOT EXISTS details TEXT;
+ALTER TABLE public.admin_audit ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP;
+CREATE INDEX IF NOT EXISTS admin_audit_created ON public.admin_audit (created_at);
+ALTER TABLE public.admin_audit ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.admin_audit FROM anon, authenticated;
+
 -- app_settings
 CREATE TABLE IF NOT EXISTS public.app_settings (
   key TEXT PRIMARY KEY,
@@ -568,26 +582,26 @@ ALTER TABLE public.integrations ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.integrations FROM anon, authenticated;
 
 -- Default plans (from .docs/monetization.md). Existing plans are left untouched.
-INSERT INTO public.plans (code, name, blurb, price_usd, price_ngn, videos_per_month, max_video_minutes, voice_clone, watermark, priority, max_targets, lip_sync, api_access, team_seats, saved_voices, features_json, sort, public, permissions_json, contact_sales, minutes_per_month, price_usd_yearly, price_ngn_yearly)
-  VALUES ('free', 'Free', 'Try ReelLingo on a short clip.', 0, 0, 1, 3, FALSE, TRUE, 0, 1, FALSE, FALSE, 1, 0, '{"features":["Standard AI voices","ReelLingo watermark","SRT & VTT subtitles"],"featured":false}', 0, TRUE, '{"multi_speaker":false,"review":true,"keep_background":true,"captions":true,"formats":false,"link_import":true,"youtube":false,"audio_only":true,"public_share":true,"subtitles_only":true,"human_review":false,"clips":false,"youtube_languages":false}', FALSE, 2, 0, 0)
+INSERT INTO public.plans (code, name, blurb, price_usd, price_ngn, max_video_minutes, voice_clone, watermark, priority, max_targets, lip_sync, api_access, team_seats, saved_voices, features_json, sort, public, permissions_json, contact_sales, minutes_per_month, price_usd_yearly, price_ngn_yearly)
+  VALUES ('free', 'Free', 'Try ReelLingo on a short clip.', 0, 0, 3, FALSE, TRUE, 0, 1, FALSE, FALSE, 1, 0, '{"features":["Standard AI voices","ReelLingo watermark","SRT & VTT subtitles"],"featured":false}', 0, TRUE, '{"multi_speaker":false,"review":true,"keep_background":true,"captions":true,"formats":false,"link_import":true,"youtube":false,"audio_only":true,"public_share":true,"subtitles_only":true,"human_review":false,"clips":false,"youtube_languages":false}', FALSE, 2, 0, 0)
   ON CONFLICT (code) DO NOTHING;
-INSERT INTO public.plans (code, name, blurb, price_usd, price_ngn, videos_per_month, max_video_minutes, voice_clone, watermark, priority, max_targets, lip_sync, api_access, team_seats, saved_voices, features_json, sort, public, permissions_json, contact_sales, minutes_per_month, price_usd_yearly, price_ngn_yearly)
-  VALUES ('subtitles', 'Subtitles', 'Accurate subtitles in 50+ languages.', 3, 4500, 10, 60, FALSE, FALSE, 1, 3, FALSE, FALSE, 1, 0, '{"features":["No watermark","Burned-in caption styles","SRT, VTT & styled subtitles","3 languages per upload"],"featured":false}', 1, TRUE, '{"multi_speaker":false,"review":true,"keep_background":true,"captions":true,"formats":true,"link_import":true,"youtube":true,"audio_only":true,"public_share":true,"subtitles_only":true,"human_review":false,"clips":false,"youtube_languages":true}', FALSE, 5, 30, 45000)
+INSERT INTO public.plans (code, name, blurb, price_usd, price_ngn, max_video_minutes, voice_clone, watermark, priority, max_targets, lip_sync, api_access, team_seats, saved_voices, features_json, sort, public, permissions_json, contact_sales, minutes_per_month, price_usd_yearly, price_ngn_yearly)
+  VALUES ('subtitles', 'Subtitles', 'Accurate subtitles in 50+ languages.', 3, 4500, 60, FALSE, FALSE, 1, 3, FALSE, FALSE, 1, 0, '{"features":["No watermark","Burned-in caption styles","SRT, VTT & styled subtitles","3 languages per upload"],"featured":false}', 1, TRUE, '{"multi_speaker":false,"review":true,"keep_background":true,"captions":true,"formats":true,"link_import":true,"youtube":true,"audio_only":true,"public_share":true,"subtitles_only":true,"human_review":false,"clips":false,"youtube_languages":true}', FALSE, 5, 30, 45000)
   ON CONFLICT (code) DO NOTHING;
-INSERT INTO public.plans (code, name, blurb, price_usd, price_ngn, videos_per_month, max_video_minutes, voice_clone, watermark, priority, max_targets, lip_sync, api_access, team_seats, saved_voices, features_json, sort, public, permissions_json, contact_sales, minutes_per_month, price_usd_yearly, price_ngn_yearly)
-  VALUES ('starter', 'Starter', 'For hobbyists and TikTokers.', 10, 15000, 10, 10, TRUE, FALSE, 1, 2, FALSE, FALSE, 1, 0, '{"features":["Voice cloning","No watermark","2 languages per upload","Burned-in captions","Short clips add-on"],"featured":false}', 2, TRUE, '{"multi_speaker":false,"review":true,"keep_background":true,"captions":true,"formats":true,"link_import":true,"youtube":false,"audio_only":true,"public_share":true,"subtitles_only":true,"human_review":false,"clips":true,"youtube_languages":true}', FALSE, 16, 100, 150000)
+INSERT INTO public.plans (code, name, blurb, price_usd, price_ngn, max_video_minutes, voice_clone, watermark, priority, max_targets, lip_sync, api_access, team_seats, saved_voices, features_json, sort, public, permissions_json, contact_sales, minutes_per_month, price_usd_yearly, price_ngn_yearly)
+  VALUES ('starter', 'Starter', 'For hobbyists and TikTokers.', 10, 15000, 10, TRUE, FALSE, 1, 2, FALSE, FALSE, 1, 0, '{"features":["Voice cloning","No watermark","2 languages per upload","Burned-in captions","Short clips add-on"],"featured":false}', 2, TRUE, '{"multi_speaker":false,"review":true,"keep_background":true,"captions":true,"formats":true,"link_import":true,"youtube":false,"audio_only":true,"public_share":true,"subtitles_only":true,"human_review":false,"clips":true,"youtube_languages":true}', FALSE, 16, 100, 150000)
   ON CONFLICT (code) DO NOTHING;
-INSERT INTO public.plans (code, name, blurb, price_usd, price_ngn, videos_per_month, max_video_minutes, voice_clone, watermark, priority, max_targets, lip_sync, api_access, team_seats, saved_voices, features_json, sort, public, permissions_json, contact_sales, minutes_per_month, price_usd_yearly, price_ngn_yearly)
-  VALUES ('creator', 'Creator', 'The sweet spot for YouTubers.', 25, 38000, 20, 30, TRUE, FALSE, 2, 4, TRUE, FALSE, 1, 1, '{"features":["Premium voice cloning + saved voice","Priority processing","4 languages per upload","Multi-speaker dubbing","Publish to YouTube","Human review & lip-sync add-ons"],"featured":true}', 3, TRUE, '{"multi_speaker":true,"review":true,"keep_background":true,"captions":true,"formats":true,"link_import":true,"youtube":true,"audio_only":true,"public_share":true,"subtitles_only":true,"human_review":true,"clips":true,"youtube_languages":true}', FALSE, 40, 250, 380000)
+INSERT INTO public.plans (code, name, blurb, price_usd, price_ngn, max_video_minutes, voice_clone, watermark, priority, max_targets, lip_sync, api_access, team_seats, saved_voices, features_json, sort, public, permissions_json, contact_sales, minutes_per_month, price_usd_yearly, price_ngn_yearly)
+  VALUES ('creator', 'Creator', 'The sweet spot for YouTubers.', 25, 38000, 30, TRUE, FALSE, 2, 4, TRUE, FALSE, 1, 1, '{"features":["Premium voice cloning + saved voice","Priority processing","4 languages per upload","Multi-speaker dubbing","Publish to YouTube","Human review & lip-sync add-ons"],"featured":true}', 3, TRUE, '{"multi_speaker":true,"review":true,"keep_background":true,"captions":true,"formats":true,"link_import":true,"youtube":true,"audio_only":true,"public_share":true,"subtitles_only":true,"human_review":true,"clips":true,"youtube_languages":true}', FALSE, 40, 250, 380000)
   ON CONFLICT (code) DO NOTHING;
-INSERT INTO public.plans (code, name, blurb, price_usd, price_ngn, videos_per_month, max_video_minutes, voice_clone, watermark, priority, max_targets, lip_sync, api_access, team_seats, saved_voices, features_json, sort, public, permissions_json, contact_sales, minutes_per_month, price_usd_yearly, price_ngn_yearly)
-  VALUES ('studio', 'Studio', 'For media houses and serious channels.', 75, 115000, 60, 60, TRUE, FALSE, 3, 10, TRUE, TRUE, 5, 5, '{"features":["Lip-sync add-on","Highest priority queue","10 languages per upload","Team workspace (5 seats)","API access","Dedicated WhatsApp support"],"featured":false}', 4, TRUE, '{"multi_speaker":true,"review":true,"keep_background":true,"captions":true,"formats":true,"link_import":true,"youtube":true,"audio_only":true,"public_share":true,"subtitles_only":true,"human_review":true,"clips":true,"youtube_languages":true}', FALSE, 125, 750, 1150000)
+INSERT INTO public.plans (code, name, blurb, price_usd, price_ngn, max_video_minutes, voice_clone, watermark, priority, max_targets, lip_sync, api_access, team_seats, saved_voices, features_json, sort, public, permissions_json, contact_sales, minutes_per_month, price_usd_yearly, price_ngn_yearly)
+  VALUES ('studio', 'Studio', 'For media houses and serious channels.', 75, 115000, 60, TRUE, FALSE, 3, 10, TRUE, TRUE, 5, 5, '{"features":["Lip-sync add-on","Highest priority queue","10 languages per upload","Team workspace (5 seats)","API access","Dedicated WhatsApp support"],"featured":false}', 4, TRUE, '{"multi_speaker":true,"review":true,"keep_background":true,"captions":true,"formats":true,"link_import":true,"youtube":true,"audio_only":true,"public_share":true,"subtitles_only":true,"human_review":true,"clips":true,"youtube_languages":true}', FALSE, 125, 750, 1150000)
   ON CONFLICT (code) DO NOTHING;
-INSERT INTO public.plans (code, name, blurb, price_usd, price_ngn, videos_per_month, max_video_minutes, voice_clone, watermark, priority, max_targets, lip_sync, api_access, team_seats, saved_voices, features_json, sort, public, permissions_json, contact_sales, minutes_per_month, price_usd_yearly, price_ngn_yearly)
-  VALUES ('ministry', 'Church & Ministry', 'Every sermon, in every language your congregation speaks.', 150, 225000, 60, 120, TRUE, FALSE, 3, 5, TRUE, FALSE, 5, 3, '{"features":["Sermons up to 2 hours","English, French, Yoruba, Hausa & Igbo","Pastor''s saved voice","Team workspace (5 seats)","Human review by native speakers","Short clips for social media"],"featured":false}', 5, TRUE, '{"multi_speaker":true,"review":true,"keep_background":true,"captions":true,"formats":true,"link_import":true,"youtube":true,"audio_only":true,"public_share":true,"subtitles_only":true,"human_review":true,"clips":true,"youtube_languages":true}', FALSE, 250, 1500, 2250000)
+INSERT INTO public.plans (code, name, blurb, price_usd, price_ngn, max_video_minutes, voice_clone, watermark, priority, max_targets, lip_sync, api_access, team_seats, saved_voices, features_json, sort, public, permissions_json, contact_sales, minutes_per_month, price_usd_yearly, price_ngn_yearly)
+  VALUES ('ministry', 'Church & Ministry', 'Every sermon, in every language your congregation speaks.', 150, 225000, 120, TRUE, FALSE, 3, 5, TRUE, FALSE, 5, 3, '{"features":["Sermons up to 2 hours","English, French, Yoruba, Hausa & Igbo","Pastor''s saved voice","Team workspace (5 seats)","Human review by native speakers","Short clips for social media"],"featured":false}', 5, TRUE, '{"multi_speaker":true,"review":true,"keep_background":true,"captions":true,"formats":true,"link_import":true,"youtube":true,"audio_only":true,"public_share":true,"subtitles_only":true,"human_review":true,"clips":true,"youtube_languages":true}', FALSE, 250, 1500, 2250000)
   ON CONFLICT (code) DO NOTHING;
-INSERT INTO public.plans (code, name, blurb, price_usd, price_ngn, videos_per_month, max_video_minutes, voice_clone, watermark, priority, max_targets, lip_sync, api_access, team_seats, saved_voices, features_json, sort, public, permissions_json, contact_sales, minutes_per_month, price_usd_yearly, price_ngn_yearly)
-  VALUES ('agency', 'Agency & Nollywood', 'Distributors, studios and agencies with large catalogues.', 0, 0, 0, 120, TRUE, FALSE, 3, 10, TRUE, TRUE, 20, 20, '{"features":["Custom minutes and pricing","Feature films and series","Lip-sync","Human review and quality checks","Dedicated account manager"],"featured":false}', 6, TRUE, '{"multi_speaker":true,"review":true,"keep_background":true,"captions":true,"formats":true,"link_import":true,"youtube":true,"audio_only":true,"public_share":true,"subtitles_only":true,"human_review":true,"clips":true,"youtube_languages":true}', TRUE, 0, 0, 0)
+INSERT INTO public.plans (code, name, blurb, price_usd, price_ngn, max_video_minutes, voice_clone, watermark, priority, max_targets, lip_sync, api_access, team_seats, saved_voices, features_json, sort, public, permissions_json, contact_sales, minutes_per_month, price_usd_yearly, price_ngn_yearly)
+  VALUES ('agency', 'Agency & Nollywood', 'Distributors, studios and agencies with large catalogues.', 0, 0, 120, TRUE, FALSE, 3, 10, TRUE, TRUE, 20, 20, '{"features":["Custom minutes and pricing","Feature films and series","Lip-sync","Human review and quality checks","Dedicated account manager"],"featured":false}', 6, TRUE, '{"multi_speaker":true,"review":true,"keep_background":true,"captions":true,"formats":true,"link_import":true,"youtube":true,"audio_only":true,"public_share":true,"subtitles_only":true,"human_review":true,"clips":true,"youtube_languages":true}', TRUE, 0, 0, 0)
   ON CONFLICT (code) DO NOTHING;
 -- Plans from before minutes existed get the recommended prices and minutes (only once).
 UPDATE public.plans SET price_usd = 0, price_ngn = 0, price_usd_yearly = 0, price_ngn_yearly = 0, minutes_per_month = 2, max_video_minutes = 3, max_targets = 1, lip_sync = FALSE, sort = 0, permissions_json = '{"multi_speaker":false,"review":true,"keep_background":true,"captions":true,"formats":false,"link_import":true,"youtube":false,"audio_only":true,"public_share":true,"subtitles_only":true,"human_review":false,"clips":false,"youtube_languages":false}'

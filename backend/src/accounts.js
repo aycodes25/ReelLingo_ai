@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { config } from "./config.js";
+import { config, isAdminEmail } from "./config.js";
 import { getMonthlyUsage, getSubscription } from "./database.js";
 import { many, one, query, toBool } from "./db.js";
 import { grantMinutes, minuteBalance, SUBSCRIPTION_GRACE_MS } from "./minutes.js";
@@ -8,6 +8,15 @@ import { getPlan } from "./plans.js";
 /** Billing identity of a workspace: a user's own account, or a team (shared plan and credits). */
 export function billingIdFor({ userId, teamId = null }) {
   return teamId ? `team:${teamId}` : userId;
+}
+
+/**
+ * Admins are promoted in Admin → Users, or listed in ADMIN_EMAILS. An address only counts as an admin's once its
+ * owner has confirmed it, so nobody can claim an admin address by signing up with it first.
+ */
+export function isAdminUser(user, profile = null) {
+  if (profile?.is_admin) return true;
+  return isAdminEmail(user?.email || profile?.email) && user?.emailConfirmed !== false;
 }
 
 function subscriptionActive(subscription) {

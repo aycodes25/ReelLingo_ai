@@ -2,12 +2,12 @@ import express from "express";
 import { applyReferral, ensureProfile, updateProfile } from "../accounts.js";
 import { login, logout, refreshSession, signup } from "../auth.js";
 import { config } from "../config.js";
-import { asyncRoute, authLimiter } from "../http.js";
+import { asyncRoute, authLimiter, signupLimiter } from "../http.js";
 
 const router = express.Router();
 const oauthProviders = new Set(["google", "github", "apple", "facebook"]);
 
-router.post("/auth/signup", authLimiter, asyncRoute(async (request, response) => {
+router.post("/auth/signup", authLimiter, signupLimiter, asyncRoute(async (request, response) => {
   if (!config.signupsEnabled) {
     response.status(403).json({ detail: "New sign-ups are paused right now. Please check back soon.", code: "signups_closed" });
     return;

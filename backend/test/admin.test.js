@@ -97,7 +97,7 @@ test("admins control settings, plans and user accounts", async (context) => {
 
   // A custom "contact sales" plan can be created, is shown publicly, but can't be bought online.
   const enterprise = await call("/admin/plans", admin, "POST", {
-    code: "enterprise", name: "Enterprise", blurb: "Custom terms", price_usd: 500, price_ngn: 800000, videos_per_month: 200, max_video_minutes: 60,
+    code: "enterprise", name: "Enterprise", blurb: "Custom terms", price_usd: 500, price_ngn: 800000, max_video_minutes: 60,
     voice_clone: true, max_targets: 10, team_seats: 20, saved_voices: 10, lip_sync: true, api_access: true, contact_sales: true, public: true, sort: 4,
     features: "Dedicated account manager\nCustom voices",
   });
@@ -144,7 +144,14 @@ test("admins control settings, plans and user accounts", async (context) => {
   assert.ok(profit.rows.filter((row) => row.ngn?.revenue).every((row) => row.ngn.worst_profit > 0 && row.usd.worst_profit > 0));
   assert.ok(profit.addons.every((addon) => addon.worst_profit_ngn >= 0));
   // A plan priced too low is flagged straight away.
-  const cheapStarter = await call("/admin/plans/starter", admin, "PUT", { ...plans.plans.find((plan) => plan.code === "starter"), price_ngn: 5000 }).then((response) => response.json());
+  const starterBefore = plans.plans.find((plan) => plan.code === "starter");
+  const refused = await call("/admin/plans/starter", admin, "PUT", { ...starterBefore, price_ngn: 5000 });
+  assert.equal(refused.status, 409, "a plan that could lose money isn't saved unless the admin confirms it");
+  const refusedBody = await refused.json();
+  assert.equal(refusedBody.code, "unprofitable");
+  assert.ok(refusedBody.warnings.some((warning) => warning.startsWith("Starter (monthly, ₦)")));
+  assert.equal((await call("/admin/plans", admin).then((response) => response.json())).plans.find((plan) => plan.code === "starter").price_ngn, starterBefore.price_ngn, "nothing changed");
+  const cheapStarter = await call("/admin/plans/starter", admin, "PUT", { ...starterBefore, price_ngn: 5000, confirm_loss: true }).then((response) => response.json());
   assert.equal(cheapStarter.price_ngn, 5000);
   assert.ok((await call("/admin/profit", admin).then((response) => response.json())).warnings.some((warning) => /Starter \(monthly, ₦\)/.test(warning)));
   const applied = await call("/admin/plans/apply-recommended", admin, "POST", {}).then((response) => response.json());

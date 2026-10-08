@@ -30,47 +30,47 @@ const ALL_ON = Object.fromEntries(Object.keys(PERMISSIONS).map((key) => [key, tr
 export const DEFAULT_PLANS = [
   {
     code: "free", name: "Free", blurb: "Try ReelLingo on a short clip.", price_usd: 0, price_ngn: 0, price_usd_yearly: 0, price_ngn_yearly: 0,
-    minutes_per_month: 2, videos_per_month: 1, max_video_minutes: 3, voice_clone: false, watermark: true, priority: 0, max_targets: 1,
+    minutes_per_month: 2, max_video_minutes: 3, voice_clone: false, watermark: true, priority: 0, max_targets: 1,
     lip_sync: false, api_access: false, team_seats: 1, saved_voices: 0, sort: 0,
     permissions: { ...ALL_ON, multi_speaker: false, formats: false, youtube: false, human_review: false, clips: false, youtube_languages: false },
     features: ["Standard AI voices", "ReelLingo watermark", "SRT & VTT subtitles"],
   },
   {
     code: "subtitles", name: "Subtitles", blurb: "Accurate subtitles in 50+ languages.", price_usd: 3, price_ngn: 4500, price_usd_yearly: 30, price_ngn_yearly: 45000,
-    minutes_per_month: 5, videos_per_month: 10, max_video_minutes: 60, voice_clone: false, watermark: false, priority: 1, max_targets: 3,
+    minutes_per_month: 5, max_video_minutes: 60, voice_clone: false, watermark: false, priority: 1, max_targets: 3,
     lip_sync: false, api_access: false, team_seats: 1, saved_voices: 0, sort: 1,
     permissions: { ...ALL_ON, multi_speaker: false, human_review: false, clips: false },
     features: ["No watermark", "Burned-in caption styles", "SRT, VTT & styled subtitles", "3 languages per upload"],
   },
   {
     code: "starter", name: "Starter", blurb: "For hobbyists and TikTokers.", price_usd: 10, price_ngn: 15000, price_usd_yearly: 100, price_ngn_yearly: 150000,
-    minutes_per_month: 16, videos_per_month: 10, max_video_minutes: 10, voice_clone: true, watermark: false, priority: 1, max_targets: 2,
+    minutes_per_month: 16, max_video_minutes: 10, voice_clone: true, watermark: false, priority: 1, max_targets: 2,
     lip_sync: false, api_access: false, team_seats: 1, saved_voices: 0, sort: 2,
     permissions: { ...ALL_ON, multi_speaker: false, youtube: false, human_review: false },
     features: ["Voice cloning", "No watermark", "2 languages per upload", "Burned-in captions", "Short clips add-on"],
   },
   {
     code: "creator", name: "Creator", blurb: "The sweet spot for YouTubers.", price_usd: 25, price_ngn: 38000, price_usd_yearly: 250, price_ngn_yearly: 380000,
-    minutes_per_month: 40, videos_per_month: 20, max_video_minutes: 30, voice_clone: true, watermark: false, priority: 2, max_targets: 4,
+    minutes_per_month: 40, max_video_minutes: 30, voice_clone: true, watermark: false, priority: 2, max_targets: 4,
     lip_sync: true, api_access: false, team_seats: 1, saved_voices: 1, sort: 3, featured: true, permissions: ALL_ON,
     features: ["Premium voice cloning + saved voice", "Priority processing", "4 languages per upload", "Multi-speaker dubbing", "Publish to YouTube", "Human review & lip-sync add-ons"],
   },
   {
     code: "studio", name: "Studio", blurb: "For media houses and serious channels.", price_usd: 75, price_ngn: 115000, price_usd_yearly: 750, price_ngn_yearly: 1150000,
-    minutes_per_month: 125, videos_per_month: 60, max_video_minutes: 60, voice_clone: true, watermark: false, priority: 3, max_targets: 10,
+    minutes_per_month: 125, max_video_minutes: 60, voice_clone: true, watermark: false, priority: 3, max_targets: 10,
     lip_sync: true, api_access: true, team_seats: 5, saved_voices: 5, sort: 4, permissions: ALL_ON,
     features: ["Lip-sync add-on", "Highest priority queue", "10 languages per upload", "Team workspace (5 seats)", "API access", "Dedicated WhatsApp support"],
   },
   {
     code: "ministry", name: "Church & Ministry", blurb: "Every sermon, in every language your congregation speaks.",
     price_usd: 150, price_ngn: 225000, price_usd_yearly: 1500, price_ngn_yearly: 2250000,
-    minutes_per_month: 250, videos_per_month: 60, max_video_minutes: 120, voice_clone: true, watermark: false, priority: 3, max_targets: 5,
+    minutes_per_month: 250, max_video_minutes: 120, voice_clone: true, watermark: false, priority: 3, max_targets: 5,
     lip_sync: true, api_access: false, team_seats: 5, saved_voices: 3, sort: 5, permissions: ALL_ON,
     features: ["Sermons up to 2 hours", "English, French, Yoruba, Hausa & Igbo", "Pastor's saved voice", "Team workspace (5 seats)", "Human review by native speakers", "Short clips for social media"],
   },
   {
     code: "agency", name: "Agency & Nollywood", blurb: "Distributors, studios and agencies with large catalogues.", price_usd: 0, price_ngn: 0,
-    price_usd_yearly: 0, price_ngn_yearly: 0, minutes_per_month: 0, videos_per_month: 0, max_video_minutes: 120, voice_clone: true, watermark: false,
+    price_usd_yearly: 0, price_ngn_yearly: 0, minutes_per_month: 0, max_video_minutes: 120, voice_clone: true, watermark: false,
     priority: 3, max_targets: 10, lip_sync: true, api_access: true, team_seats: 20, saved_voices: 20, sort: 6, permissions: ALL_ON, contact_sales: true,
     features: ["Custom minutes and pricing", "Feature films and series", "Lip-sync", "Human review and quality checks", "Dedicated account manager"],
   },
@@ -93,13 +93,13 @@ const LEGACY_PACKS = [
 ];
 
 const PLAN_COLUMNS = [
-  "code", "name", "blurb", "price_usd", "price_ngn", "videos_per_month", "max_video_minutes", "voice_clone", "watermark", "priority",
+  "code", "name", "blurb", "price_usd", "price_ngn", "max_video_minutes", "voice_clone", "watermark", "priority",
   "max_targets", "lip_sync", "api_access", "team_seats", "saved_voices", "features_json", "sort", "public", "permissions_json", "contact_sales",
   "minutes_per_month", "price_usd_yearly", "price_ngn_yearly",
 ];
 
 function seedValues(plan) {
-  return [plan.code, plan.name, plan.blurb, plan.price_usd, plan.price_ngn, plan.videos_per_month, plan.max_video_minutes, plan.voice_clone,
+  return [plan.code, plan.name, plan.blurb, plan.price_usd, plan.price_ngn, plan.max_video_minutes, plan.voice_clone,
     plan.watermark, plan.priority, plan.max_targets, plan.lip_sync, plan.api_access, plan.team_seats, plan.saved_voices,
     JSON.stringify({ features: plan.features, featured: Boolean(plan.featured) }), plan.sort, true, JSON.stringify(plan.permissions), Boolean(plan.contact_sales),
     plan.minutes_per_month, plan.price_usd_yearly, plan.price_ngn_yearly];
@@ -186,7 +186,6 @@ export function normalizePlan(row) {
     price_usd_yearly: Number(row.price_usd_yearly || 0),
     price_ngn_yearly: Number(row.price_ngn_yearly || 0),
     minutes_per_month: Number(row.minutes_per_month || 0),
-    videos_per_month: Number(row.videos_per_month),
     max_video_minutes: Number(row.max_video_minutes),
     voice_clone: toBool(row.voice_clone),
     watermark: toBool(row.watermark),
@@ -228,7 +227,7 @@ export async function listAllPlans() {
 }
 
 const NUMBER_FIELDS = [
-  "price_usd", "price_ngn", "price_usd_yearly", "price_ngn_yearly", "minutes_per_month", "videos_per_month", "max_video_minutes",
+  "price_usd", "price_ngn", "price_usd_yearly", "price_ngn_yearly", "minutes_per_month", "max_video_minutes",
   "priority", "max_targets", "team_seats", "saved_voices", "sort",
 ];
 const BOOL_FIELDS = ["voice_clone", "watermark", "lip_sync", "api_access", "public", "contact_sales"];
@@ -244,6 +243,12 @@ function planValues(input, current = null) {
     values[field] = field.startsWith("price_") ? value : Math.round(value);
   }
   if (values.max_video_minutes < 1) throw new Error("A plan needs at least 1 minute per video.");
+  // A plan that charges money must give something for it, and must be payable with both Paystack (₦) and Stripe ($).
+  const paid = values.price_usd > 0 || values.price_ngn > 0;
+  if (paid && !merged.contact_sales) {
+    if (values.minutes_per_month < 1) throw new Error("A paid plan needs at least 1 minute per month, or customers would pay for nothing.");
+    if (!(values.price_usd > 0) || !(values.price_ngn > 0)) throw new Error("Set both the dollar price and the naira price, so the plan can be paid for with Stripe and Paystack.");
+  }
   if (values.max_targets < 1) values.max_targets = 1;
   if (values.team_seats < 1) values.team_seats = 1;
   for (const field of BOOL_FIELDS) values[field] = Boolean(merged[field]);
@@ -266,7 +271,7 @@ function rawPlan(row) {
   } catch {
     extra = {};
   }
-  return { ...plan, videos_per_month: Number(row.videos_per_month), max_video_minutes: Number(row.max_video_minutes), features: extra.features || [] };
+  return { ...plan, max_video_minutes: Number(row.max_video_minutes), features: extra.features || [] };
 }
 
 export async function getRawPlan(code) {
@@ -313,9 +318,24 @@ export async function deletePlan(code, moveTo = "free") {
   if (!(await one("SELECT id FROM plans WHERE code = $1", [code]))) throw new Error("Plan not found.");
   const target = await one("SELECT code FROM plans WHERE code = $1", [moveTo]);
   if (!target || moveTo === code) throw new Error("Choose a different plan to move subscribers to.");
+  // Customers paid through Paystack or Stripe are billed by the provider, which doesn't know the plan is going away.
+  // Stop that first; if any can't be stopped nothing is moved, so no one pays for a plan that no longer exists.
+  const { releaseProviderSubscription } = await import("./billing.js");
+  const failures = [];
+  let canceled = 0;
+  for (const row of await many("SELECT user_id FROM subscriptions WHERE tier = $1 AND status <> 'canceled'", [code])) {
+    try {
+      if (await releaseProviderSubscription(row.user_id)) canceled += 1;
+    } catch (error) {
+      failures.push(`${row.user_id} (${error.message})`);
+    }
+  }
+  if (failures.length) {
+    throw new Error(`Couldn't stop automatic billing at the payment provider for ${failures.length} subscriber(s), so nothing was changed: ${failures.slice(0, 3).join("; ")}. Cancel them in your Paystack or Stripe dashboard, then delete the plan again.`);
+  }
   const moved = await query("UPDATE subscriptions SET tier = $1, updated_at = CURRENT_TIMESTAMP WHERE tier = $2", [moveTo, code]);
   await query("DELETE FROM plans WHERE code = $1", [code]);
-  return { moved: moved.rowCount };
+  return { moved: moved.rowCount, billing_stopped: canceled };
 }
 
 export async function getPlan(code) {

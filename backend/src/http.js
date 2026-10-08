@@ -1,7 +1,7 @@
 import { rateLimit, ipKeyGenerator } from "express-rate-limit";
-import { ensureProfile, planFor } from "./accounts.js";
+import { ensureProfile, isAdminUser, planFor } from "./accounts.js";
 import { getCurrentUser } from "./auth.js";
-import { config, isAdminEmail } from "./config.js";
+import { config } from "./config.js";
 import { dbTime, query } from "./db.js";
 import { getLanguage } from "./languages.js";
 import { getSignedUrl } from "./storage.js";
@@ -58,7 +58,7 @@ export const authenticate = asyncRoute(async (request, response, next) => {
   const profile = await ensureProfile(user.id, user.email);
   const email = user.email || profile?.email || "";
   // Admins are listed in ADMIN_EMAILS or promoted from Admin → Users.
-  request.user = { ...user, email, isAdmin: isAdminEmail(email) || Boolean(profile?.is_admin) };
+  request.user = { ...user, email, isAdmin: isAdminUser({ ...user, email }, profile) };
   if (profile?.disabled && !request.user.isAdmin) {
     response.status(403).json({ detail: `Your account has been suspended. Contact ${config.supportEmail} if you think this is a mistake.`, code: "suspended" });
     return;
@@ -121,6 +121,8 @@ const limiterDefaults = {
 // Limits are read on every request so changes from Admin → Settings apply immediately.
 export const generalLimiter = rateLimit({ ...limiterDefaults, windowMs: 15 * 60 * 1000, limit: () => config.rateLimitPerWindow, skip: (request) => request.path === "/health" || request.path.startsWith("/files/") || request.path.startsWith("/uploads/") });
 export const authLimiter = rateLimit({ ...limiterDefaults, windowMs: 15 * 60 * 1000, limit: () => config.authRateLimitPerWindow });
+// New accounts per internet address per hour: stops one person farming free minutes with throwaway accounts.
+export const signupLimiter = rateLimit({ ...limiterDefaults, windowMs: 60 * 60 * 1000, limit: () => config.signupRateLimitPerHour });
 export const jobLimiter = rateLimit({
   ...limiterDefaults,
   windowMs: 60 * 60 * 1000,

@@ -215,7 +215,7 @@ test("live API: uploads, batches, review, sharing, deletion, minutes and webhook
   // Paystack webhook: bad signatures are rejected; a valid charge adds the purchased minutes once.
   // (payg_15 is an old 15-minute pack: payments made before minutes existed are still honoured.)
   await query("INSERT INTO payments (user_id, billing_id, provider, reference, kind, credit_pack, amount, currency) VALUES ('studio-user', 'studio-user', 'paystack', 'rl_test_ref', 'payg', 'payg_15', 800000, 'NGN')");
-  const event = JSON.stringify({ event: "charge.success", data: { reference: "rl_test_ref", customer: { customer_code: "CUS_1" } } });
+  const event = JSON.stringify({ event: "charge.success", data: { reference: "rl_test_ref", amount: 800000, currency: "NGN", customer: { customer_code: "CUS_1" } } });
   assert.equal((await fetch(`${baseUrl}/billing/webhooks/paystack`, { method: "POST", headers: { "x-paystack-signature": "bad" }, body: event })).status, 401);
   const signature = createHmac("sha512", "paystack-test-secret").update(event).digest("hex");
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -228,7 +228,7 @@ test("live API: uploads, batches, review, sharing, deletion, minutes and webhook
   const studioProfile = await ensureProfile("studio-user", "studio@example.com");
   assert.equal((await applyReferral("friend", studioProfile.referral_code)).applied, true);
   await query("INSERT INTO payments (user_id, billing_id, provider, reference, kind, plan_code, amount, currency, billing_cycle) VALUES ('friend', 'friend', 'paystack', 'rl_friend_ref', 'subscription', 'starter', 1500000, 'NGN', 'monthly')");
-  const friendEvent = JSON.stringify({ event: "charge.success", data: { reference: "rl_friend_ref", customer: { customer_code: "CUS_2" } } });
+  const friendEvent = JSON.stringify({ event: "charge.success", data: { reference: "rl_friend_ref", amount: 1500000, currency: "NGN", customer: { customer_code: "CUS_2" } } });
   const friendSignature = createHmac("sha512", "paystack-test-secret").update(friendEvent).digest("hex");
   assert.equal((await fetch(`${baseUrl}/billing/webhooks/paystack`, { method: "POST", headers: { "x-paystack-signature": friendSignature, "Content-Type": "application/json" }, body: friendEvent })).status, 200);
   assert.equal((await studioMinutes()).topup_left, 22.9, "the inviter gets 3 minutes");

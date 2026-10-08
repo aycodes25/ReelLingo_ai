@@ -206,6 +206,19 @@ export async function refundRun(job, { reason = "refund" } = {}) {
   return round1(refunded);
 }
 
+/**
+ * True once paid provider work (transcription, translation, voice…) has been recorded for the job's current run.
+ * From then on the money is already spent, so deleting the project doesn't give the minutes back.
+ */
+export async function runHasCost(job) {
+  const charge = job.options_json?.charge;
+  if (!charge?.run) return false;
+  const spent = await one("SELECT MIN(created_at) AS at FROM minute_ledger WHERE job_id = $1 AND reference = $2 AND delta < 0", [job.id, charge.run]);
+  if (!spent?.at) return false;
+  const work = await one("SELECT COUNT(*) AS count FROM cost_events WHERE job_id = $1 AND created_at >= $2", [job.id, spent.at]);
+  return Number(work?.count || 0) > 0;
+}
+
 /** Adds never-expiring minutes (packs, referral rewards, admin grants). Negative amounts remove minutes. */
 export async function grantMinutes(billingId, minutes, kind, { reference = null, note = null, createdBy = null } = {}) {
   const amount = round1(minutes);

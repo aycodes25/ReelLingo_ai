@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { listGlossary, planFor } from "../accounts.js";
 import { config } from "../config.js";
+import { uploadBlocker } from "../uploadgate.js";
 import { jobCosts } from "../costs.js";
 import { countInputUsers, createJob, getJob, listJobs, updateJob } from "../database.js";
 import { one } from "../db.js";
@@ -166,7 +167,18 @@ async function assertFreeTierOpen(plan, user) {
   }
 }
 
-router.post("/jobs", authenticate, blockDuringMaintenance, workspace, jobLimiter, requireLivePipeline, upload.single("file"), asyncRoute(async (request, response) => {
+/** Refuses before any file is accepted: suspended, out of minutes, free tier paused, or over a spending cap. */
+const uploadGate = asyncRoute(async (request, response, next) => {
+  const blocked = await uploadBlocker({ user: request.user, teamId: request.workspace.teamId });
+  if (blocked) {
+    const { status, ...body } = blocked;
+    response.status(status).json(body);
+    return;
+  }
+  next();
+});
+
+router.post("/jobs", authenticate, blockDuringMaintenance, workspace, jobLimiter, requireLivePipeline, uploadGate, upload.single("file"), asyncRoute(async (request, response) => {
   const source = await resolveSource(request);
   const youtubeVideoId = String(request.body.youtube_video_id || "").trim();
   let sourceUrl = String(request.body.source_url || "").trim();
@@ -442,6 +454,12 @@ router.post("/jobs/:jobId/segments/:index/retranslate", authenticate, asyncRoute
   editable(job, request);
   const index = Number(request.params.index);
   if (!Number.isInteger(index) || index < 0 || index >= job.transcript_json.length) throw new HttpError(400, "That line doesn't exist.");
+  // Each call costs a little, and unlike dubbing it doesn't use minutes, so a project only gets so many.
+  const used = Number(job.options_json?.retranslations || 0);
+  if (used >= config.maxRetranslations) {
+    throw new HttpError(429, `This project has used its ${config.maxRetranslations} single-line re-translations. You can still edit lines by hand.`, { code: "retranslations" });
+  }
+  await updateJob(job.id, { options_json: { ...job.options_json, retranslations: used + 1 } });
   const text = await translateLine(job.transcript_json, index, job.target_language, { glossary: await listGlossary(job.user_id), tone: job.options_json.tone });
   if (!text) throw new HttpError(502, "The translator returned nothing. Try again.");
   const translated = [...job.translated_segments_json];

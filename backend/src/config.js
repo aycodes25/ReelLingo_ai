@@ -86,6 +86,11 @@ export const config = {
   rateLimitPerWindow: number("RATE_LIMIT_PER_15_MIN", 600),
   authRateLimitPerWindow: number("AUTH_RATE_LIMIT_PER_15_MIN", 30),
   jobRateLimitPerHour: number("JOB_RATE_LIMIT_PER_HOUR", 30),
+  uploadsPerHour: number("UPLOADS_PER_HOUR", 40),
+  signupRateLimitPerHour: number("SIGNUP_RATE_LIMIT_PER_HOUR", 5),
+  maxRetranslations: number("MAX_RETRANSLATIONS", 25),
+  // Free dubbing needs a confirmed email address, so one person can't open many throwaway accounts.
+  requireConfirmedEmail: process.env.REQUIRE_CONFIRMED_EMAIL !== "false",
   clamavHost: process.env.CLAMAV_HOST || "",
   clamavPort: number("CLAMAV_PORT", 3310),
   clamavMaxBytes: number("CLAMAV_MAX_BYTES", 100 * 1024 * 1024),

@@ -4,8 +4,10 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getCurrentUser } from "./auth.js";
-import { config, isAdminEmail } from "./config.js";
+import { getProfile, isAdminUser } from "./accounts.js";
+import { config } from "./config.js";
 import { logger } from "./logger.js";
+import { teamFromHeader, uploadBlocker, uploadsExceeded } from "./uploadgate.js";
 
 export const tusDirectory = join(tmpdir(), "reellingo-tus");
 const datastore = new FileStore({ directory: tusDirectory, expirationPeriodInMilliseconds: 24 * 3600 * 1000 });
@@ -29,7 +31,15 @@ export const tusServer = new Server({
   async onIncomingRequest(request, uploadId) {
     const user = await userFrom(request);
     if (!user) throw { status_code: 401, body: "Sign in to upload.\n" };
-    if (request.method === "POST" && config.maintenanceMode && !isAdminEmail(user.email)) throw { status_code: 503, body: `${config.maintenanceMessage}\n` };
+    if (request.method === "POST") {
+      // Starting an upload is the expensive moment (disk and bandwidth), so every account rule is checked here.
+      const profile = await getProfile(user.id);
+      if (!isAdminUser(user, profile)) {
+        const blocked = await uploadBlocker({ user, teamId: await teamFromHeader(request.headers.get("x-workspace"), user.id) });
+        if (blocked) throw { status_code: blocked.status, body: `${blocked.detail}\n` };
+        if (uploadsExceeded(user.id)) throw { status_code: 429, body: "You've started a lot of uploads in the last hour. Please try again shortly.\n" };
+      }
+    }
     if (uploadId && request.method !== "POST") {
       const upload = await datastore.getUpload(uploadId).catch(() => null);
       if (upload && upload.metadata?.userId !== user.id) throw { status_code: 403, body: "This upload belongs to another account.\n" };

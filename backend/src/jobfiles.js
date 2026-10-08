@@ -1,6 +1,6 @@
 import { countInputUsers, updateJob } from "./database.js";
 import { query } from "./db.js";
-import { refundRun } from "./minutes.js";
+import { refundRun, runHasCost } from "./minutes.js";
 import { deleteFiles, listFiles } from "./storage.js";
 
 /**
@@ -11,8 +11,9 @@ export async function purgeJob(job, { hard = false } = {}) {
   const paths = await listFiles(`jobs/${job.id}`);
   if (job.input_storage_path && await countInputUsers(job.input_storage_path, job.id) === 0) paths.push(job.input_storage_path);
   await deleteFiles(paths);
-  // Failed runs were already refunded by the pipeline; anything still waiting or queued is refunded now.
-  if (!["done", "failed"].includes(job.status)) await refundRun(job, { reason: "deleted" });
+  // Failed runs were already refunded by the pipeline. Work that hasn't started is refunded now; once paid providers
+  // have done their part (e.g. a translation waiting for review) the minutes are spent and stay spent.
+  if (!["done", "failed"].includes(job.status) && !(await runHasCost(job))) await refundRun(job, { reason: "deleted" });
   if (hard) {
     await query("DELETE FROM jobs WHERE id = $1", [job.id]);
     return;

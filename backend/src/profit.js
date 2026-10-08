@@ -187,3 +187,23 @@ export async function profitReport() {
     warnings,
   };
 }
+
+/**
+ * Checks one plan, as it's about to be saved, against the worst case (a customer uses every minute).
+ * Returns plain sentences; an empty list means the plan makes money even then.
+ */
+export function planProfitWarnings(plan) {
+  if (plan.contact_sales) return [];
+  const cost = costPerMinute();
+  const warnings = [];
+  const check = (cycle, minutes, revenueNgn, revenueUsd) => {
+    if (!minutes || (!revenueNgn && !revenueUsd)) return;
+    const row = evaluate({ revenueNgn, revenueUsd, minutes, cost });
+    if (row.ngn.revenue && row.ngn.worst_profit < 0) warnings.push(`${plan.name} (${cycle}, ₦) could lose up to ₦${Math.abs(row.ngn.worst_profit).toLocaleString("en-NG")} if a customer uses every minute.`);
+    if (row.usd.revenue && row.usd.worst_profit < 0) warnings.push(`${plan.name} (${cycle}, $) could lose up to $${Math.abs(row.usd.worst_profit)} if a customer uses every minute.`);
+  };
+  const minutes = Number(plan.minutes_per_month || 0);
+  check("monthly", minutes, Number(plan.price_ngn || 0), Number(plan.price_usd || 0));
+  check("yearly", minutes * 12, Number(plan.price_ngn_yearly || 0), Number(plan.price_usd_yearly || 0));
+  return warnings;
+}

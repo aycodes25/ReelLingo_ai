@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { ensureProfile, OVERRIDE_BOOLS, OVERRIDE_NUMBERS, parseOverrides, planFor, referralStats } from "./accounts.js";
-import { activateSubscription, cancelSubscription } from "./billing.js";
+import { activateSubscription, cancelSubscription, releaseProviderSubscription } from "./billing.js";
 import { config, isAdminEmail } from "./config.js";
 import { getJob } from "./database.js";
 import { dbTime, many, one, query, toBool } from "./db.js";
@@ -198,8 +198,8 @@ function cleanOverrides(input) {
 
 async function ensureSubscriptionRow(userId) {
   await query(
-    `INSERT INTO subscriptions (user_id, tier, status, videos_used_this_month, max_videos_per_month, max_video_minutes, updated_at)
-     VALUES ($1, 'free', 'active', 0, 1, 3, CURRENT_TIMESTAMP) ON CONFLICT (user_id) DO NOTHING`,
+    `INSERT INTO subscriptions (user_id, tier, status, max_video_minutes, updated_at)
+     VALUES ($1, 'free', 'active', 3, CURRENT_TIMESTAMP) ON CONFLICT (user_id) DO NOTHING`,
     [userId],
   );
 }
@@ -234,6 +234,13 @@ export async function updateUser(userId, changes, admin) {
   if (changes.plan) {
     const plan = await getPlan(changes.plan);
     if (plan.code !== changes.plan) throw new Error("Unknown plan.");
+    // If the customer is paying through Paystack or Stripe, stop that first: otherwise they keep being charged
+    // for a plan they no longer have. If the provider refuses, nothing changes and the admin is told why.
+    try {
+      await releaseProviderSubscription(userId);
+    } catch (error) {
+      throw new Error(`Couldn't stop this customer's automatic billing at the payment provider (${error.message}). Cancel it in your Paystack or Stripe dashboard first, then change the plan.`);
+    }
     if (plan.code === "free") {
       await ensureSubscriptionRow(userId);
       await query("UPDATE subscriptions SET tier = 'free', status = 'active', provider = 'manual', current_period_end = NULL, cancel_at_period_end = $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2", [false, userId]);

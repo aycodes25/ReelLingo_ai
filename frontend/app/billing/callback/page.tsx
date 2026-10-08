@@ -25,6 +25,12 @@ export default function BillingCallbackPage() {
           setState("success");
           return;
         }
+        if (result.status === "underpaid") {
+          // The provider collected less than the plan costs: nothing is activated until the team has looked at it.
+          setState("error");
+          setMessage("The amount received didn't match the price, so the plan hasn't been activated yet. Our team has been told.");
+          return;
+        }
         if (attempts < 6) setTimeout(check, 3000);
         else setState("pending");
       } catch (error) {

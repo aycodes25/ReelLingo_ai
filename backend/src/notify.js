@@ -28,6 +28,19 @@ export async function sendEmail({ to, subject, text, html, userId = null, jobId 
   return true;
 }
 
+/** Emails everyone in ADMIN_EMAILS. Returns how many were sent; never throws. */
+export async function notifyAdmins(subject, text) {
+  let sent = 0;
+  for (const to of config.adminEmails) {
+    try {
+      if (await sendEmail({ to, subject, text, html: `<div style="font-family:Arial,sans-serif;line-height:1.55">${escapeHtml(text).replace(/\n/g, "<br>")}</div>`, operation: "admin_alert" })) sent += 1;
+    } catch (error) {
+      logger.warn({ err: error }, "Admin alert failed");
+    }
+  }
+  return sent;
+}
+
 /** WhatsApp Business: an approved template is required outside a 24h chat window, so it's used when configured. */
 export async function sendWhatsApp({ phone, text, templateParams = [], userId = null, jobId = null, operation = "message" }) {
   if (!whatsappConfigured() || !phone) return false;

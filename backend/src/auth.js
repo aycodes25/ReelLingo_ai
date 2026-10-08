@@ -132,7 +132,9 @@ export async function getCurrentUser(authorization, apiKeyHeader) {
   if (!response.ok) return null;
   const data = await response.json();
   if (!data.id) return null;
-  const user = { id: data.id, email: data.email || "", metadata: data.user_metadata || {} };
+  // Supabase sets email_confirmed_at once the person has proved they own the address (or on sign-up when
+  // "Confirm email" is switched off in Supabase, which is why that setting matters).
+  const user = { id: data.id, email: data.email || "", metadata: data.user_metadata || {}, emailConfirmed: Boolean(data.email_confirmed_at || data.confirmed_at) };
   userCache.set(token, { user, expires: Date.now() + USER_CACHE_MS });
   if (userCache.size > 5000) userCache.delete(userCache.keys().next().value);
   return user;
