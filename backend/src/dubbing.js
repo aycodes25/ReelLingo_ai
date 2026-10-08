@@ -8,7 +8,7 @@ import { getLanguage } from "./languages.js";
 import { logger } from "./logger.js";
 import { runCapture } from "./media.js";
 import { responseError, withRetries } from "./retry.js";
-import { spitchVoiceFor, synthesizeWithSpitch, useSpitchVoice } from "./spitch.js";
+import { NIGERIAN_VOICE_LANGUAGES, spitchVoiceFor, synthesizeWithSpitch, useSpitchVoice } from "./spitch.js";
 
 const ELEVENLABS_API = "https://api.elevenlabs.io";
 const TRACK_SAMPLE_RATE = 24000;
@@ -16,7 +16,6 @@ const MAX_SEGMENT_SPEEDUP = 1.5;
 const MAX_TOTAL_SPEEDUP = 2.5;
 const SPEAKER_SAMPLE_SECONDS = 150;
 const MIN_CLONE_SECONDS = 4;
-const TTS_CONCURRENCY = 2;
 const OPENAI_VOICES = ["alloy", "onyx", "nova", "echo", "shimmer", "fable"];
 
 let modelLanguagesCache = null;
@@ -51,20 +50,40 @@ async function modelLanguages() {
     const model = models.find((item) => item.model_id === config.elevenlabsModel);
     modelLanguagesCache = new Set((model?.languages || []).map((language) => language.language_id));
   } catch {
-    modelLanguagesCache = new Set();
+    return new Set();
   }
   return modelLanguagesCache;
 }
 
-async function remainingCharacters() {
+/** Can the configured ElevenLabs model speak this language? true / false, or null when ElevenLabs couldn't be asked. */
+export async function elevenSpeaks(language) {
+  if (!config.elevenlabsApiKey) return null;
+  const supported = await modelLanguages();
+  return supported.size ? supported.has(language) : null;
+}
+
+// OpenAI's voices read these languages with an English accent, which is wrong for the listener, so they are never used for them.
+const OPENAI_CANNOT_SPEAK = new Set(NIGERIAN_VOICE_LANGUAGES);
+
+/** What the ElevenLabs plan allows right now: characters left, and whether it can copy a voice. Null when ElevenLabs couldn't be asked. */
+export async function elevenAccount() {
+  if (!config.elevenlabsApiKey) return null;
   try {
     const response = await fetch(`${ELEVENLABS_API}/v1/user/subscription`, { headers: elevenHeaders() });
     if (!response.ok) return null;
     const subscription = await response.json();
-    return Number(subscription.character_limit) - Number(subscription.character_count);
+    return {
+      remaining: Number(subscription.character_limit) - Number(subscription.character_count),
+      // The free plan can't clone a voice; if ElevenLabs doesn't say, assume it can (a failed attempt falls back to a standard voice).
+      canClone: subscription.can_use_instant_voice_cloning === undefined ? null : Boolean(subscription.can_use_instant_voice_cloning),
+    };
   } catch {
     return null;
   }
+}
+
+async function remainingCharacters() {
+  return (await elevenAccount())?.remaining ?? null;
 }
 
 export async function createSpeakerSample(sourceAudioPath, segments, outputPath) {
@@ -219,10 +238,36 @@ export async function dubSegments({
   const clipsDirectory = join(workdir, "dub-clips");
   await mkdir(clipsDirectory, { recursive: true });
 
-  // Yoruba, Hausa, Igbo and Pidgin use Spitch's native Nigerian voices unless the creator wants their own (cloned) voice.
-  const nativeVoices = useSpitchVoice(targetLanguage, { cloned: Boolean(voiceClone || savedVoiceId) });
+  // Yoruba, Hausa, Igbo and Pidgin use Spitch's native Nigerian voices unless the creator wants their own (cloned) voice,
+  // and a cloned voice is only kept when ElevenLabs can really speak the language (it can't speak these ones).
+  const cloning = Boolean(voiceClone || savedVoiceId);
+  let nativeVoices = useSpitchVoice(targetLanguage, { cloned: cloning });
+  let notice = null;
+  const languageName = getLanguage(targetLanguage)?.name || targetLanguage;
+  if (!nativeVoices && cloning && config.nativeVoiceWhenCloneCannotSpeak && useSpitchVoice(targetLanguage, { cloned: false })) {
+    if ((await elevenAccount())?.canClone === false) {
+      nativeVoices = true;
+      notice = `Voice cloning isn't available on our voice plan right now, so the native ${languageName} voice was used instead.`;
+    } else if (await elevenSpeaks(targetLanguage) === false) {
+      nativeVoices = true;
+      notice = `A cloned voice can't speak ${languageName} properly, so the native ${languageName} voice was used instead.`;
+    }
+  }
   let provider = nativeVoices ? "spitch" : config.elevenlabsApiKey ? "elevenlabs" : "openai";
   let fallbackReason = provider === "openai" ? "ElevenLabs is not configured." : null;
+  /** Where to go when ElevenLabs can't be used: Spitch for Nigerian languages, OpenAI for the rest, and never a wrong-accent voice. */
+  const fallBack = (reason) => {
+    if (OPENAI_CANNOT_SPEAK.has(targetLanguage)) {
+      if (useSpitchVoice(targetLanguage, { cloned: false })) {
+        notice = `${reason} The native ${getLanguage(targetLanguage)?.name || targetLanguage} voice was used instead.`;
+        return "spitch";
+      }
+      throw new Error(`The voice service is out of credit or not set up for ${getLanguage(targetLanguage)?.name || targetLanguage}. ${reason}`);
+    }
+    fallbackReason = reason;
+    return "openai";
+  };
+  if (provider === "openai" && OPENAI_CANNOT_SPEAK.has(targetLanguage)) provider = fallBack("ElevenLabs is not configured.");
   const ranked = rankSpeakers(sourceSegments.length ? sourceSegments : speakable);
   const rankOf = new Map(ranked.map((item, index) => [item.speaker, index]));
 
@@ -243,18 +288,21 @@ export async function dubSegments({
       if (hit) cached.set(segment.index, hit);
     }
   }
-  const pending = speakable.filter((segment) => !cached.has(segment.index));
+  let pending = speakable.filter((segment) => !cached.has(segment.index));
 
   if (provider === "elevenlabs" && pending.length) {
     const characters = pending.reduce((sum, segment) => sum + segment.text.length, 0);
     const remaining = await remainingCharacters();
     if (remaining !== null && remaining < characters) {
-      provider = "openai";
-      fallbackReason = `ElevenLabs character quota is too low (${Math.max(0, remaining)} left, ${characters} needed).`;
+      provider = fallBack(`ElevenLabs character quota is too low (${Math.max(0, remaining)} left, ${characters} needed).`);
+      // Lines kept from an earlier run were made with the other voice, so they can't be reused with this one.
+      cached.clear();
+      pending = speakable;
     }
   }
 
   // Choose a concrete voice ID per speaker, cloning only speakers who still need new clips.
+  // The provider can change above (quota), so the voice key for the cache is worked out after that.
   const voices = new Map();
   const clones = [];
   const speakerResults = [];
@@ -301,7 +349,9 @@ export async function dubSegments({
   try {
     const supported = provider === "elevenlabs" ? await modelLanguages() : new Set();
     const languageCode = supported.has(targetLanguage) ? targetLanguage : undefined;
-    const fresh = await mapWithConcurrency(pending, TTS_CONCURRENCY, async (segment) => {
+    // Voice lines are made several at a time; each engine has its own limit (Spitch and ElevenLabs refuse requests past it).
+    const concurrency = provider === "spitch" ? config.spitchConcurrency : provider === "elevenlabs" ? config.elevenlabsConcurrency : 4;
+    const fresh = await mapWithConcurrency(pending, Math.max(1, concurrency), async (segment) => {
       const voice = voices.get(speakerOf(segment)) || (provider === "openai" ? "alloy" : provider === "spitch" ? spitchVoiceFor(targetLanguage, 0, preferredVoice) : config.elevenlabsFallbackVoiceId);
       const audio = provider === "spitch"
         ? await synthesizeWithSpitch(segment.text.trim(), voice, targetLanguage)
@@ -324,6 +374,7 @@ export async function dubSegments({
     voiceCloned: clones.length > 0 || Boolean(savedVoiceId),
     provider,
     fallbackReason,
+    notice,
     newClips: produced,
     reusedClips: cached.size,
     speakers: speakerResults,

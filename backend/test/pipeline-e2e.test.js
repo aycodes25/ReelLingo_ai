@@ -76,7 +76,7 @@ Object.assign(process.env, {
 });
 
 // ElevenLabs goes through global fetch.
-const eleven = { tts: [], clones: 0, deletes: 0, scribe: 0 };
+const eleven = { tts: [], clones: 0, deletes: 0, scribe: 0, languages: ["en"] };
 // Spitch (native Nigerian voices, translation and Yoruba tone marks) goes through global fetch too.
 const spitch = { speech: [], translate: [], diacritics: [] };
 const realFetch = globalThis.fetch;
@@ -98,7 +98,7 @@ globalThis.fetch = async (url, options = {}) => {
     }
   }
   if (!href.startsWith("https://api.elevenlabs.io")) return realFetch(url, options);
-  if (href.endsWith("/v1/models")) return Response.json([{ model_id: "eleven_v4", languages: [{ language_id: "en" }] }]);
+  if (href.endsWith("/v1/models")) return Response.json([{ model_id: "eleven_v4", languages: eleven.languages.map((language_id) => ({ language_id })) }]);
   if (href.endsWith("/v1/user/subscription")) return Response.json({ character_count: 0, character_limit: 100000 });
   if (href.endsWith("/v1/voices/add")) {
     eleven.clones += 1;
@@ -256,14 +256,35 @@ test("Yoruba dubs use Spitch's native voices, Spitch translation and Yoruba tone
   assert.ok(costs.items.some((item) => item.provider === "spitch" && item.operation === "speech"));
 });
 
-test("a cloned voice for a Yoruba dub still uses ElevenLabs (Spitch voices are stock voices)", async () => {
+test("a cloned voice for a Yoruba dub uses ElevenLabs when ElevenLabs can speak Yoruba (it can, with the eleven_v4 model)", async () => {
   const input = await storedVideo("yoruba-clone.mp4");
   eleven.tts = [];
   spitch.speech = [];
+  const { resetElevenLabsCache } = await import("../src/dubbing.js");
+  eleven.languages = ["en", "yo"];
+  resetElevenLabsCache();
+  try {
+    const job = await runJob(await database.createJob({ user_id: "creator", source_language: "en", target_language: "yo", voice_clone: true, input_storage_path: input, options_json: { keep_background: false } }));
+    assert.equal(job.status, "done", job.error_message);
+    assert.equal(spitch.speech.length, 0);
+    assert.equal(eleven.tts.length, 2);
+  } finally {
+    eleven.languages = ["en"];
+    resetElevenLabsCache();
+  }
+});
+
+test("a cloned voice for a language ElevenLabs can't speak uses the native voice instead, and the customer is told", async () => {
+  const input = await storedVideo("yoruba-native-switch.mp4");
+  eleven.tts = [];
+  spitch.speech = [];
+  const { resetElevenLabsCache } = await import("../src/dubbing.js");
+  resetElevenLabsCache(); // this mock's model only lists English
   const job = await runJob(await database.createJob({ user_id: "creator", source_language: "en", target_language: "yo", voice_clone: true, input_storage_path: input, options_json: { keep_background: false } }));
   assert.equal(job.status, "done", job.error_message);
-  assert.equal(spitch.speech.length, 0);
-  assert.equal(eleven.tts.length, 2);
+  assert.equal(eleven.tts.length, 0, "no ElevenLabs voice read Yoruba");
+  assert.ok(spitch.speech.length >= 1, "the native Yoruba voice did");
+  assert.match(job.processing_note, /A cloned voice can't speak Yoruba properly, so the native Yoruba voice was used instead/);
 });
 
 test("human review pauses for a native speaker, then the job continues once they submit", async () => {

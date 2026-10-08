@@ -6,6 +6,7 @@ import { expireStaleReviews } from "./reviews.js";
 import { runJob } from "./pipeline.js";
 import { deleteFiles, listFiles } from "./storage.js";
 import { purgeOldAudit } from "./audit.js";
+import { purgeInbox } from "./inbox.js";
 import { cleanupExpiredUploads } from "./uploads.js";
 import { purgeUploadCounters } from "./uploadgate.js";
 import { checkLowBalances } from "./usage.js";
@@ -18,13 +19,23 @@ const active = new Set();
 
 async function runClaimed(job) {
   running += 1;
-  const heartbeat = setInterval(() => void touchJob(job.id).catch(() => undefined), config.jobHeartbeatMs);
+  // If this attempt stops being the owner (the job was requeued and picked up again), it must stop, not run a second copy.
+  job.lease = { lost: false };
+  const heartbeat = setInterval(() => {
+    touchJob(job.id, job.attempts).then((owned) => {
+      if (!owned && !job.lease.lost) {
+        job.lease.lost = true;
+        logger.warn({ jobId: job.id, attempt: job.attempts }, "This attempt no longer owns the job; stopping it");
+      }
+    }).catch(() => undefined);
+  }, config.jobHeartbeatMs);
   const task = (async () => {
     try {
       logger.info({ jobId: job.id, attempt: job.attempts }, "Job started");
       const result = await runJob(job);
       logger.info({ jobId: job.id, status: result?.status }, "Job finished");
     } catch (error) {
+      if (job.lease.lost) return; // another attempt owns the job now; don't fail or refund it from here
       logger.error({ err: error, jobId: job.id }, "Job crashed");
       await updateJob(job.id, { status: "failed", error_message: error.message }).catch(() => undefined);
       await refundRun(await getJob(job.id)).catch(() => undefined);
@@ -72,6 +83,7 @@ export async function cleanupExpiredFiles(now = new Date()) {
   }
   if (expired) logger.info({ expired }, "Deleted files past the retention window");
   await cleanupExpiredUploads();
+  await purgeInbox().catch((error) => logger.warn({ err: error }, "Upload inbox cleanup failed"));
   await purgeUploadCounters().catch((error) => logger.warn({ err: error }, "Upload counter cleanup failed"));
   await purgeOldAudit().catch((error) => logger.warn({ err: error }, "Audit log cleanup failed"));
   // Hourly: email admins when a paid provider is running low (Admin → API usage → alert level).

@@ -1,5 +1,6 @@
 import { config } from "./config.js";
 import { refundRun } from "./minutes.js";
+import { logger } from "./logger.js";
 import { closeDatabase, dbTime, initializeDatabase, isPostgres, many, one, query, toBool } from "./db.js";
 
 export { closeDatabase, initializeDatabase };
@@ -135,8 +136,15 @@ export async function claimNextJob() {
   return normalizeJob(row);
 }
 
-export async function touchJob(id) {
-  await query("UPDATE jobs SET heartbeat_at = $1 WHERE id = $2 AND status = 'processing'", [dbTime(), id]);
+/**
+ * Tells the queue "this attempt is still alive". Returns false when it is no longer the attempt that owns the job (the job was
+ * handed to someone else, finished, or was deleted), so the caller knows to stop instead of doing the same work twice.
+ */
+export async function touchJob(id, attempt = null) {
+  const result = attempt === null
+    ? await query("UPDATE jobs SET heartbeat_at = $1 WHERE id = $2 AND status = 'processing'", [dbTime(), id])
+    : await query("UPDATE jobs SET heartbeat_at = $1 WHERE id = $2 AND status = 'processing' AND attempts = $3", [dbTime(), id, attempt]);
+  return result.rowCount > 0;
 }
 
 /**
@@ -162,6 +170,10 @@ export async function requeueStaleJobs({ staleMs = config.jobStaleMs, maxAttempt
     }
   }
   const failed = { rowCount: failedCount };
+  const stale = await many("SELECT id, attempts, heartbeat_at FROM jobs WHERE status = 'processing' AND (heartbeat_at IS NULL OR heartbeat_at < $1)", [cutoff]);
+  for (const row of stale) {
+    logger.warn({ jobId: Number(row.id), attempts: Number(row.attempts), lastHeartbeat: row.heartbeat_at, staleAfterMs: staleMs }, "Job stopped sending heartbeats, so it goes back in the queue");
+  }
   const requeued = await query(
     `UPDATE jobs SET status = 'queued', updated_at = CURRENT_TIMESTAMP
      WHERE status = 'processing' AND (heartbeat_at IS NULL OR heartbeat_at < $1)`,

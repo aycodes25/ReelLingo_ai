@@ -9,6 +9,7 @@ import { runWithJob } from "./costs.js";
 import { getJob, updateJob } from "./database.js";
 import { one, query } from "./db.js";
 import { dubSegments } from "./dubbing.js";
+import { findInInbox } from "./inbox.js";
 import { importFromUrl } from "./importer.js";
 import { getLanguage } from "./languages.js";
 import { lipSync } from "./lipsync.js";
@@ -32,6 +33,9 @@ export { assertAudibleAudio, mergeAudioVideo } from "./render.js";
 
 /** Thrown when a job pauses on purpose (waiting for the creator to review the translation). */
 class PausedForReview extends Error {}
+
+/** Thrown when another attempt has taken over this job (it was requeued), so this copy must stop instead of repeating the work. */
+class JobSuperseded extends Error {}
 
 function extensionFor(mimetype, filename) {
   const fromName = extname(filename || "").toLowerCase();
@@ -104,6 +108,9 @@ async function acquireInput(job, workdir, step) {
   }
   if (!job.input_storage_path) throw new Error("This project has no source video.");
   if (job.files_expired_at) throw new Error("The original upload has been deleted under the retention policy. Upload the video again.");
+  // The upload is usually still on this computer: use it instead of fetching it back from storage.
+  const local = await findInInbox(job.input_storage_path);
+  if (local) return { path: local, notes: [] };
   const localPath = join(workdir, `input${extname(job.input_storage_path) || ".mp4"}`);
   await downloadFile(job.input_storage_path, localPath);
   return { path: localPath, notes: [] };
@@ -150,12 +157,14 @@ function storageClipCache(job, workdir) {
   };
 }
 
-async function cachedBackground(job, mixPath, workdir, durationSeconds, notes) {
+export async function cachedBackground(job, mixPath, workdir, durationSeconds, notes, signal) {
   const key = `jobs/${job.id}/work/background.m4a`;
-  if (job.options_json.background_cached && await fileExists(key)) {
+  // A background made by the old ElevenLabs method still had the original voice in it, so it is never reused.
+  const trusted = job.options_json.background_provider !== "elevenlabs";
+  if (job.options_json.background_cached && trusted && await fileExists(key)) {
     return downloadFile(key, join(workdir, "background-cached.m4a"));
   }
-  const { backgroundPath, provider, note } = await separateBackground(mixPath, workdir, durationSeconds);
+  const { backgroundPath, provider, note } = await separateBackground(mixPath, workdir, durationSeconds, { signal });
   if (note) notes.push(note);
   if (!backgroundPath) return null;
   const encoded = join(workdir, "background.m4a");
@@ -163,6 +172,7 @@ async function cachedBackground(job, mixPath, workdir, durationSeconds, notes) {
   await uploadFile(key, encoded, "audio/mp4");
   await updateJob(job.id, { options_json: { ...job.options_json, background_cached: true, background_provider: provider } });
   job.options_json.background_cached = true;
+  job.options_json.background_provider = provider;
   return encoded;
 }
 
@@ -173,7 +183,20 @@ async function cachedBackground(job, mixPath, workdir, durationSeconds, notes) {
 export async function processJob(job, { localInputPath = null } = {}) {
   const workdir = await mkdtemp(join(tmpdir(), `reellingo-${job.id}-`));
   const notes = [];
-  const step = (current_step, extra = {}) => updateJob(job.id, { status: "processing", current_step, error_message: null, ...extra });
+  const stopBackground = new AbortController();
+  let backgroundTask = null;
+  // Finished files are saved to storage while the next step is already running; everything is awaited before the job is marked done.
+  const pendingSaves = [];
+  const save = (path, localPath, contentType) => {
+    const saving = uploadFile(path, localPath, contentType);
+    saving.catch(() => undefined); // a failure is raised when the saves are awaited; this only stops it being reported twice
+    pendingSaves.push(saving);
+    return path;
+  };
+  const step = (current_step, extra = {}) => {
+    if (job.lease?.lost) throw new JobSuperseded();
+    return updateJob(job.id, { status: "processing", current_step, error_message: null, ...extra });
+  };
   try {
     if (config.mockMode) {
       throw new Error("Live dubbing is not configured. Set OPENAI_API_KEY in backend/.env; demo placeholders are never exported as a finished dub.");
@@ -200,6 +223,25 @@ export async function processJob(job, { localInputPath = null } = {}) {
     const mixPath = join(workdir, "mix.wav");
     await run("ffmpeg", ["-y", "-i", inputPath, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audioPath]);
     await run("ffmpeg", ["-y", "-i", inputPath, "-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "1", speakerAudioPath]);
+
+    // Removing the speech from the original sound (to keep its music and effects) is the slowest step, and it doesn't need
+    // the transcript or the translation. So it starts now and runs alongside them; it only has to be ready for the final mix.
+    // Projects that stop for a review first do it afterwards instead (their work folder is cleared while they wait).
+    const wantsBackground = !subtitlesOnly && options.keep_background !== false;
+    const startBackground = () => (async () => {
+      const stereo = Number(info.streams.find((stream) => stream.codec_type === "audio")?.channels || 1) >= 2 ? 2 : 1;
+      await run("ffmpeg", ["-y", "-i", inputPath, "-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", String(stereo), mixPath], { signal: stopBackground.signal });
+      return cachedBackground(job, mixPath, workdir, durationSeconds, notes, stopBackground.signal);
+    })().catch((error) => {
+      if (stopBackground.signal.aborted) return null;
+      logger.warn({ err: error, jobId: job.id }, "Could not keep the background audio");
+      notes.push("The original background sound could not be kept, so the dub plays on its own.");
+      return null;
+    });
+    let backgroundSettled = false;
+    if (wantsBackground && !options.review && !options.human_review) {
+      backgroundTask = startBackground().finally(() => { backgroundSettled = true; });
+    }
 
     const glossary = await listGlossary(job.user_id);
     let transcript = job.transcript_json;
@@ -259,13 +301,8 @@ export async function processJob(job, { localInputPath = null } = {}) {
 
     if (subtitlesOnly) return await finishSubtitles(job, { inputPath, info, isAudioOnly, translated, transcript, notes, workdir });
 
-    let background = null;
-    if (options.keep_background !== false) {
-      await step("separating");
-      const stereo = Number(info.streams.find((stream) => stream.codec_type === "audio")?.channels || 1) >= 2 ? 2 : 1;
-      await run("ffmpeg", ["-y", "-i", inputPath, "-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", String(stereo), mixPath]);
-      background = await cachedBackground(job, mixPath, workdir, durationSeconds, notes);
-    }
+    // The background track keeps being prepared while the voice is made (it is only needed for the final mix below).
+    if (wantsBackground && !backgroundTask) backgroundTask = startBackground().finally(() => { backgroundSettled = true; });
 
     await step("dubbing");
     const dubbedAudioPath = join(workdir, "translated-audio.wav");
@@ -289,6 +326,7 @@ export async function processJob(job, { localInputPath = null } = {}) {
     const staleKeys = [...clipCache.known].filter((key) => !currentKeys.includes(key));
     if (staleKeys.length) await deleteFiles(staleKeys.map((key) => `jobs/${job.id}/clips/${key}.mp3`)).catch(() => undefined);
     await updateJob(job.id, { clips_json: currentKeys, speakers_json: speakers ? speakers.map((speaker) => ({ ...speaker, voice: dubResult.speakers.find((item) => item.speaker === speaker.id)?.voice })) : null });
+    if (dubResult.notice) notes.push(dubResult.notice);
     if (dubResult.fallbackReason) {
       const voice = dubResult.provider === "openai" ? "an OpenAI voice" : "a standard ElevenLabs voice";
       notes.push(`Some or all lines were dubbed with ${voice}. ${dubResult.fallbackReason}`);
@@ -296,6 +334,11 @@ export async function processJob(job, { localInputPath = null } = {}) {
     }
     await assertAudibleAudio(dubbedAudioPath);
 
+    let background = null;
+    if (backgroundTask) {
+      if (!backgroundSettled) await step("separating"); // only shows if the voice finished first
+      background = await backgroundTask;
+    }
     let finalAudioPath = dubbedAudioPath;
     if (background) {
       await step("mixing");
@@ -311,15 +354,15 @@ export async function processJob(job, { localInputPath = null } = {}) {
     let mainPath;
     if (isAudioOnly) {
       await exportAudioOnly(finalAudioPath, audioMp3, { watermark });
-      mainPath = await uploadFile(`${prefix}/output-${version}.mp3`, audioMp3, "audio/mpeg");
+      mainPath = save(`${prefix}/output-${version}.mp3`, audioMp3, "audio/mpeg");
       outputs.push({ kind: "audio", label: "Dubbed audio (MP3)", path: mainPath });
     } else {
       const outputPath = join(workdir, "output.mp4");
       await mergeAudioVideo(inputPath, finalAudioPath, outputPath, { watermark });
-      mainPath = await uploadFile(`${prefix}/output-${version}.mp4`, outputPath, "video/mp4");
+      mainPath = save(`${prefix}/output-${version}.mp4`, outputPath, "video/mp4");
       outputs.push({ kind: "video", label: "Dubbed video (MP4)", path: mainPath });
       await encodeAudio(finalAudioPath, audioMp3);
-      outputs.push({ kind: "audio", label: "Dubbed audio only (MP3)", path: await uploadFile(`${prefix}/audio-${version}.mp3`, audioMp3, "audio/mpeg") });
+      outputs.push({ kind: "audio", label: "Dubbed audio only (MP3)", path: save(`${prefix}/audio-${version}.mp3`, audioMp3, "audio/mpeg") });
     }
 
     await step("generating_subtitles");
@@ -335,7 +378,7 @@ export async function processJob(job, { localInputPath = null } = {}) {
         outputs.push({ kind: "subtitles", format: "ass", label: "Styled subtitles (ASS)", path: await uploadFile(`${prefix}/subtitles.ass`, assPath, "text/plain; charset=utf-8") });
         const captioned = join(workdir, "captioned.mp4");
         await mergeAudioVideo(inputPath, finalAudioPath, captioned, { watermark, assPath });
-        outputs.push({ kind: "captioned", label: "Video with burned-in captions", path: await uploadFile(`${prefix}/captioned-${version}.mp4`, captioned, "video/mp4") });
+        outputs.push({ kind: "captioned", label: "Video with burned-in captions", path: save(`${prefix}/captioned-${version}.mp4`, captioned, "video/mp4") });
       }
       for (const aspect of options.formats || []) {
         if (!ASPECTS[aspect]) continue;
@@ -344,10 +387,14 @@ export async function processJob(job, { localInputPath = null } = {}) {
         const assPath = options.captions ? await writeAss(join(workdir, `captions-${slug}.ass`), translated, { ...target, style: options.captions }) : null;
         const variant = join(workdir, `format-${slug}.mp4`);
         await mergeAudioVideo(inputPath, finalAudioPath, variant, { watermark, assPath, aspect });
-        outputs.push({ kind: "format", aspect, label: ASPECTS[aspect].label, path: await uploadFile(`${prefix}/format-${slug}-${version}.mp4`, variant, "video/mp4") });
+        // Saving this one runs while the next one is being drawn.
+        const output = { kind: "format", aspect, label: ASPECTS[aspect].label, path: `${prefix}/format-${slug}-${version}.mp4` };
+        outputs.push(output);
+        save(output.path, variant, "video/mp4");
       }
     }
 
+    await Promise.all(pendingSaves); // lip-sync reads the saved video, and the files must be there before anything is shown as ready
     if (!isAudioOnly && options.lip_sync) {
       await step("lip_syncing");
       try {
@@ -385,6 +432,8 @@ export async function processJob(job, { localInputPath = null } = {}) {
     await notifyJob(finished, "done");
     return finished;
   } catch (error) {
+    // Another attempt owns this job now. It carries on from the saved steps; this one just stops.
+    if (error instanceof JobSuperseded) return null;
     if (error instanceof PausedForReview) {
       // Human reviews wait for a reviewer, so the creator isn't asked to do anything yet.
       if (error.message !== "human") await notifyJob(await getJob(job.id), "review");
@@ -392,6 +441,10 @@ export async function processJob(job, { localInputPath = null } = {}) {
     }
     return failJob(job, error, notes);
   } finally {
+    // If the job ended early (failed, paused for review), stop the background work and wait for it to let go of the files.
+    stopBackground.abort();
+    await backgroundTask?.catch(() => undefined);
+    await Promise.allSettled(pendingSaves);
     await rm(workdir, { recursive: true, force: true });
   }
 }

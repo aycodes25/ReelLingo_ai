@@ -1,10 +1,8 @@
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { config } from "./config.js";
-import { recordCost } from "./costs.js";
 import { logger } from "./logger.js";
 import { commandAvailable, getMediaInfo, run, runCapture } from "./media.js";
-import { responseError, withRetries } from "./retry.js";
 
 async function peakDb(path) {
   const { stderr } = await runCapture("ffmpeg", ["-v", "info", "-i", path, "-af", "volumedetect", "-f", "null", "-"]);
@@ -19,36 +17,11 @@ async function findFile(directory, name) {
 }
 
 /** Demucs (open-source, best quality) writes no_vocals.wav: everything except the voices. */
-async function separateWithDemucs(mixPath, workdir) {
+async function separateWithDemucs(mixPath, workdir, signal) {
   const outputDirectory = join(workdir, "demucs");
-  await run(config.demucsCommand, ["--two-stems=vocals", "-o", outputDirectory, mixPath], { timeoutMs: 60 * 60 * 1000 });
+  await run(config.demucsCommand, ["--two-stems=vocals", ...config.demucsArgs, "-o", outputDirectory, mixPath], { timeoutMs: 60 * 60 * 1000, signal });
   const background = await findFile(outputDirectory, "no_vocals.wav");
   if (!background) throw new Error("Demucs did not produce a background track.");
-  return background;
-}
-
-/** ElevenLabs Voice Isolator returns only the voices; subtracting them from the mix leaves the background. */
-async function separateWithElevenLabs(mixPath, workdir, durationSeconds) {
-  const form = new FormData();
-  form.append("audio", new Blob([await readFile(mixPath)], { type: "audio/wav" }), "mix.wav");
-  const audio = await withRetries(async () => {
-    const response = await fetch("https://api.elevenlabs.io/v1/audio-isolation", {
-      method: "POST",
-      headers: { "xi-api-key": config.elevenlabsApiKey },
-      body: form,
-    });
-    if (!response.ok) throw await responseError(response, "ElevenLabs voice isolation");
-    return Buffer.from(await response.arrayBuffer());
-  }, { label: "ElevenLabs voice isolation" });
-  await recordCost("elevenlabs", "voice_isolation", durationSeconds / 60, "minutes", (durationSeconds / 60) * config.costs.elevenlabsIsolationPerMinute);
-  const voicesPath = join(workdir, "isolated-voices.mp3");
-  await writeFile(voicesPath, audio);
-  const background = join(workdir, "background.wav");
-  await run("ffmpeg", [
-    "-y", "-i", mixPath, "-i", voicesPath, "-filter_complex",
-    "[1:a]aresample=44100,aformat=channel_layouts=stereo,volume=-1[inverse];[0:a]aformat=channel_layouts=stereo[mix];[mix][inverse]amix=inputs=2:normalize=0:duration=first[out]",
-    "-map", "[out]", "-ar", "44100", "-ac", "2", background,
-  ]);
   return background;
 }
 
@@ -62,38 +35,50 @@ async function separateWithCenterCancel(mixPath, workdir) {
   return background;
 }
 
-async function providerOrder() {
-  const preferred = config.separationProvider;
-  if (preferred === "none") return [];
-  if (preferred !== "auto") return [preferred];
-  const order = [];
-  if (await commandAvailable(config.demucsCommand, ["--help"])) order.push("demucs");
-  if (config.elevenlabsApiKey) order.push("elevenlabs");
-  order.push("ffmpeg");
-  return order;
+/**
+ * Which methods to try, best first. Demucs is the best but slow on an ordinary computer, so automatic mode only uses it when
+ * it will finish within the admin's time limit; otherwise the fast method is used and the customer is told.
+ */
+export async function providerPlan(durationSeconds) {
+  let preferred = config.separationProvider;
+  if (preferred === "elevenlabs") {
+    // Old setting. ElevenLabs only returns the voices, and taking those away from the mix never lines up exactly, so the
+    // original voice stayed audible under the dub. It's treated as automatic.
+    logger.warn("SEPARATION_PROVIDER=elevenlabs is no longer supported; using automatic");
+    preferred = "auto";
+  }
+  if (preferred === "none") return { order: [], note: null };
+  if (preferred === "ffmpeg") return { order: ["ffmpeg"], note: null };
+  const demucsReady = await commandAvailable(config.demucsCommand, ["--help"]);
+  if (preferred === "demucs") return { order: demucsReady ? ["demucs", "ffmpeg"] : ["ffmpeg"], note: null };
+  const estimatedMinutes = ((Number(durationSeconds) || 0) * config.demucsSecondsPerVideoSecond) / 60;
+  if (demucsReady && estimatedMinutes <= config.separationTimeLimitMinutes) return { order: ["demucs", "ffmpeg"], note: null };
+  return {
+    order: ["ffmpeg"],
+    note: demucsReady ? "This video is long, so the background music was kept with a faster method. It can sound slightly less clean." : null,
+  };
 }
 
 /**
  * Produces a music-and-effects track (the original audio without speech) so the dub can be laid on top of it.
  * Returns null when there is no meaningful background or no separation method works; the dub then plays alone.
+ * Pass an AbortSignal to stop the work (for example when the job fails).
  */
-export async function separateBackground(mixPath, workdir, durationSeconds) {
+export async function separateBackground(mixPath, workdir, durationSeconds, { signal } = {}) {
   const failures = [];
-  for (const provider of await providerOrder()) {
+  const { order, note: speedNote } = await providerPlan(durationSeconds);
+  for (const provider of order) {
     try {
-      const background = provider === "demucs"
-        ? await separateWithDemucs(mixPath, workdir)
-        : provider === "elevenlabs"
-          ? await separateWithElevenLabs(mixPath, workdir, durationSeconds)
-          : await separateWithCenterCancel(mixPath, workdir);
+      const background = provider === "demucs" ? await separateWithDemucs(mixPath, workdir, signal) : await separateWithCenterCancel(mixPath, workdir);
       if (await peakDb(background) <= -45) return { backgroundPath: null, provider, note: "No background music or effects were detected." };
-      return { backgroundPath: background, provider, note: null };
+      return { backgroundPath: background, provider, note: provider === "ffmpeg" ? speedNote : null };
     } catch (error) {
+      if (signal?.aborted) throw error;
       failures.push(`${provider}: ${error.message}`);
       logger.warn({ err: error, provider }, "Background separation attempt failed");
     }
   }
-  return { backgroundPath: null, provider: null, note: failures.length ? `Background audio could not be kept (${failures.join("; ")}).` : null };
+  return { backgroundPath: null, provider: null, note: failures.length ? `Background audio could not be kept (${failures.join("; ")}).` : speedNote };
 }
 
 /** Lays the dub over the background at the configured level; the output is exactly as long as the dub track. */

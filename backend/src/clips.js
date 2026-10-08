@@ -4,7 +4,7 @@ import { config } from "./config.js";
 import { recordChatUsage } from "./costs.js";
 import { getLanguage } from "./languages.js";
 import { getMediaInfo, run } from "./media.js";
-import { aspectSize, displaySize, mergeAudioVideo, writeAss } from "./render.js";
+import { aspectSize, displaySize, mergeAudioVideo, videoEncodeArgs, writeAss } from "./render.js";
 import { withRetries } from "./retry.js";
 
 const MIN_CLIP_SECONDS = 15;
@@ -105,7 +105,7 @@ export function clipSegments(segments, start, end) {
  */
 export async function renderClip(videoPath, segments, { start, end, workdir, index, style = "bold", watermark = false }) {
   const raw = join(workdir, `clip-${index}-raw.mp4`);
-  await run("ffmpeg", ["-y", "-ss", String(start), "-i", videoPath, "-t", String(end - start), "-map", "0:v:0", "-map", "0:a:0", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", "-b:a", "160k", raw]);
+  await run("ffmpeg", ["-y", "-ss", String(start), "-i", videoPath, "-t", String(end - start), "-map", "0:v:0", "-map", "0:a:0", ...videoEncodeArgs(), "-c:a", "aac", "-b:a", "160k", raw]);
   const size = displaySize(await getMediaInfo(raw));
   const target = aspectSize(size, "9:16");
   const assPath = await writeAss(join(workdir, `clip-${index}.ass`), clipSegments(segments, start, end), { ...target, style });

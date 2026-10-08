@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { listGlossary, planFor } from "../accounts.js";
 import { config } from "../config.js";
+import { saveToInbox } from "../inbox.js";
 import { uploadBlocker } from "../uploadgate.js";
 import { preflight } from "../preflight.js";
 import { jobCosts } from "../costs.js";
@@ -343,6 +344,7 @@ router.post("/jobs", authenticate, blockDuringMaintenance, workspace, jobLimiter
       inputPath = `uploads/${randomUUID()}${extname(source.originalname).toLowerCase() || (mediaType === "audio" ? ".mp3" : ".mp4")}`;
       const storingFrom = Date.now();
       await uploadFile(inputPath, source.path, source.mimetype);
+      await saveToInbox(inputPath, source.path); // so a worker on this computer doesn't have to download it again
       timings.storeMs = Date.now() - storingFrom;
     }
 

@@ -53,6 +53,17 @@ export const config = {
   transcriptionProvider: process.env.TRANSCRIPTION_PROVIDER || "openai",
   // Background separation: "auto" | "demucs" | "elevenlabs" | "ffmpeg" | "none".
   separationProvider: process.env.SEPARATION_PROVIDER || "auto",
+  // Demucs (the free background-music remover) runs on this computer's processor, roughly this many seconds of work for
+  // every second of video. When that would take longer than the limit below, a much faster method is used instead.
+  demucsSecondsPerVideoSecond: number("DEMUCS_SECONDS_PER_VIDEO_SECOND", 2),
+  separationTimeLimitMinutes: number("SEPARATION_TIME_LIMIT_MINUTES", 20),
+  demucsArgs: (process.env.DEMUCS_ARGS ?? "--overlap 0.1 -j 2").split(/\s+/).filter(Boolean),
+  // How many voice lines are made at the same time (ElevenLabs allows 2 on the free plan, 3-5 on paid plans).
+  elevenlabsConcurrency: number("ELEVENLABS_CONCURRENCY", 2),
+  // How hard the video encoder works: "balanced" is best quality, "fastest" finishes soonest (bigger files).
+  exportSpeed: process.env.EXPORT_SPEED || "fast",
+  // A cloned voice that can't speak the language (e.g. Yoruba in ElevenLabs) is swapped for the native voice.
+  nativeVoiceWhenCloneCannotSpeak: process.env.NATIVE_VOICE_WHEN_CLONE_CANNOT_SPEAK !== "false",
   demucsCommand: process.env.DEMUCS_COMMAND || "demucs",
   backgroundVolume: number("BACKGROUND_VOLUME", 1),
   mockMode: requestedMockMode && !openaiApiKey,
@@ -74,7 +85,7 @@ export const config = {
   workerConcurrency: number("WORKER_CONCURRENCY", 2),
   workerPollMs: number("WORKER_POLL_MS", 2000),
   jobHeartbeatMs: number("JOB_HEARTBEAT_MS", 15000),
-  jobStaleMs: number("JOB_STALE_MS", 120000),
+  jobStaleMs: number("JOB_STALE_MS", 300000),
   maxJobAttempts: number("MAX_JOB_ATTEMPTS", 3),
   maxRedubs: number("MAX_REDUBS", 5),
   // Manual "Retry" presses allowed per failed project (a failed run is refunded, so unlimited retries would be free provider spend).

@@ -1,5 +1,7 @@
 import { config } from "./config.js";
 import { logger } from "./logger.js";
+import { elevenAccount, elevenSpeaks } from "./dubbing.js";
+import { getLanguage } from "./languages.js";
 import { useSpitchVoice } from "./spitch.js";
 import { providerSummaries } from "./usage.js";
 
@@ -54,7 +56,17 @@ export async function preflight({ targets, duration = null, mode = "dub", cloned
   }
 
   if (mode === "dub") {
-    const nativeTargets = targets.filter((code) => useSpitchVoice(code, { cloned }));
+    // Which languages get a native Nigerian voice: those chosen that way, and (when allowed) the ones a cloned voice can't speak.
+    const nativeTargets = [];
+    const switched = [];
+    const cannotClone = cloned && (await elevenAccount())?.canClone === false;
+    for (const code of targets) {
+      if (useSpitchVoice(code, { cloned })) nativeTargets.push(code);
+      else if (cloned && config.nativeVoiceWhenCloneCannotSpeak && useSpitchVoice(code, { cloned: false }) && (cannotClone || await elevenSpeaks(code) === false)) {
+        nativeTargets.push(code);
+        switched.push(code);
+      }
+    }
     const elevenTargets = targets.filter((code) => !nativeTargets.includes(code));
     if (elevenTargets.length) {
       if (!config.elevenlabsApiKey) {
@@ -70,6 +82,23 @@ export async function preflight({ targets, duration = null, mode = "dub", cloned
             blockers.push({ code: "provider_credit", provider: "elevenlabs", message: PAUSED, needed, remaining: balance.remaining });
           }
         }
+      }
+    }
+    // A cloned voice is only as good as the language ElevenLabs can speak. Say so before the customer waits for a bad result.
+    if (cloned) {
+      for (const code of switched) {
+        const name = getLanguage(code)?.name || code;
+        warnings.push({ code: "voice_switch", message: cannotClone
+          ? `Voice cloning isn't available right now, so the native ${name} voice will be used.`
+          : `A cloned voice can't speak ${name} properly yet, so the native ${name} voice will be used for it.` });
+      }
+      if (cannotClone && !switched.length && elevenTargets.length) {
+        warnings.push({ code: "voice_clone", message: "Voice cloning isn't available right now, so a standard voice will be used instead of the speaker's own." });
+      }
+      for (const code of elevenTargets) {
+        if (await elevenSpeaks(code) !== false) continue;
+        const name = getLanguage(code)?.name || code;
+        warnings.push({ code: "voice_language", message: `A cloned voice may not pronounce ${name} well. Choose a standard voice for a cleaner result.` });
       }
     }
     if (nativeTargets.length && empty("spitch")) {

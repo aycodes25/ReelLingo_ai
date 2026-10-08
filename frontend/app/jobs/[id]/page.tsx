@@ -33,6 +33,7 @@ export default function JobStatusPage() {
   const [retryError, setRetryError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const sawTranscriptRef = useRef(false);
+  const lastAttemptRef = useRef(0);
 
   const [music, setMusic] = useState<WaitingMusicSettings | undefined>(undefined);
 
@@ -54,6 +55,11 @@ export default function JobStatusPage() {
       if (!active) return;
       setJob(updated);
       setLoadError(null);
+      // A new attempt means the server picked this project up again (for example after a restart): say so, so a repeated step isn't a mystery.
+      if (lastAttemptRef.current && updated.attempts > lastAttemptRef.current && updated.status !== "failed") {
+        push({ text: `Our server restarted this project (attempt ${updated.attempts}). Nothing is lost: it continues from the last saved step.`, tone: "warn" });
+      }
+      lastAttemptRef.current = Math.max(lastAttemptRef.current, updated.attempts || 0);
       if (updated.current_step !== lastStepRef.current && updated.status !== "failed") {
         const firstLook = lastStepRef.current === null;
         lastStepRef.current = updated.current_step;

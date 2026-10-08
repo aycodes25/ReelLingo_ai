@@ -1,9 +1,13 @@
 import { spawn } from "node:child_process";
 
 /** Runs a command, returning stdout/stderr; rejects with the tail of stderr on failure. */
-export function runCapture(command, args, { cwd, binary = false, timeoutMs } = {}) {
+export function runCapture(command, args, { cwd, binary = false, timeoutMs, signal } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    // A job that was cancelled or failed must not leave a heavy tool (Demucs, FFmpeg) running in the background.
+    const stop = () => child.kill("SIGKILL");
+    if (signal?.aborted) stop();
+    signal?.addEventListener("abort", stop, { once: true });
     const stdout = [];
     let stderr = "";
     let timer;
@@ -20,6 +24,8 @@ export function runCapture(command, args, { cwd, binary = false, timeoutMs } = {
     });
     child.on("close", (code) => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", stop);
+      if (signal?.aborted) return reject(new Error(`${command} was stopped.`));
       const output = Buffer.concat(stdout);
       if (code === 0) resolve({ stdout: binary ? output : output.toString("utf8"), stderr });
       else reject(new Error(stderr.trim().split("\n").slice(-4).join(" ") || `${command} exited with code ${code}`));

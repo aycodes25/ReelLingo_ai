@@ -390,7 +390,10 @@ function SubmitArea({ isSubmitting, progress, errorMessage, disabled, cancelUplo
         <div role="alert" className="preflight-block"><CircleAlert size={18} /><div><strong>This can&apos;t be started right now</strong>{check.blockers.map((blocker) => <p key={blocker.message}>{blocker.message}</p>)}</div></div>
       )}
       {check?.ok && check.warnings.length > 0 && (
-        <div className="preflight-warn" role="status"><Info size={16} /><div>{check.warnings.map((warning) => <p key={warning.message}>Admin note: {warning.message}</p>)}</div></div>
+        <div className="preflight-warn" role="status">
+          <Info size={16} />
+          <div>{check.warnings.map((warning) => <p key={warning.message}>{/^(provider_credit|setup)$/.test(warning.code) ? "Admin note: " : ""}{warning.message}</p>)}</div>
+        </div>
       )}
       {launching ? (
         <LaunchPanel fromUpload={fromUpload} music={music} />

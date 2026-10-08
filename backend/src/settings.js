@@ -78,7 +78,11 @@ export const SETTINGS = [
 
   // Processing
   { key: "worker_concurrency", field: "workerConcurrency", type: "number", min: 1, max: 16, group: "Processing", label: "Videos processed at the same time" },
-  { key: "separation_provider", field: "separationProvider", type: "select", options: ["auto", "demucs", "elevenlabs", "ffmpeg", "none"], group: "Processing", label: "Background separation engine" },
+  { key: "separation_provider", field: "separationProvider", type: "select", options: ["auto", "demucs", "ffmpeg", "none"], group: "Processing", label: "Background separation engine", help: "auto = Demucs (best quality, slow on a normal computer), then a fast method. ElevenLabs can't do this job well, so it isn't offered." },
+  { key: "separation_time_limit_minutes", field: "separationTimeLimitMinutes", type: "number", min: 1, max: 240, group: "Processing", label: "Longest wait for background-music removal (minutes)", help: "Longer videos use the fast method instead of Demucs so people aren't kept waiting. On a computer with a graphics card (GPU) you can raise this a lot." },
+  { key: "elevenlabs_concurrency", field: "elevenlabsConcurrency", type: "number", min: 1, max: 20, group: "Processing", label: "Voice lines made at the same time (ElevenLabs)", help: "Free plan allows 2, Starter 3, Creator 5, Pro 10. More at once = a faster dub, but going over your plan's limit makes ElevenLabs refuse requests." },
+  { key: "export_speed", field: "exportSpeed", type: "select", options: ["balanced", "fast", "fastest"], group: "Processing", label: "Video export speed", help: "fastest finishes soonest but makes bigger files; balanced is the best quality." },
+  { key: "native_voice_when_clone_cannot_speak", field: "nativeVoiceWhenCloneCannotSpeak", type: "bool", group: "Nigerian voices", label: "Use the native voice when a cloned voice can't speak the language", help: "ElevenLabs can't speak Yoruba, Hausa, Igbo or Pidgin properly. With this on, those dubs use Spitch's native voice instead of a cloned voice that reads them with the wrong accent." },
   { key: "transcription_provider", field: "transcriptionProvider", type: "select", options: ["openai", "elevenlabs"], group: "Processing", label: "Transcription engine" },
   { key: "background_volume", field: "backgroundVolume", type: "number", min: 0, max: 2, step: 0.05, group: "Processing", label: "Background music volume (1 = original)" },
   { key: "openai_chat_model", field: "openaiChatModel", type: "text", group: "Processing", label: "OpenAI translation model" },

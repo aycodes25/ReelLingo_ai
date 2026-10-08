@@ -78,6 +78,8 @@ async function elevenLabsBalance() {
         remaining: Math.max(0, limit - used),
         resets_at: data.next_character_count_reset_unix ? new Date(data.next_character_count_reset_unix * 1000).toISOString() : null,
         voices: data.voice_limit ? { used: Number(data.voice_count ?? 0), limit: Number(data.voice_limit) } : null,
+        // Free ElevenLabs plans can't copy a voice, so every "speaker clone" dub falls back to another voice.
+        can_clone: data.can_use_instant_voice_cloning === undefined ? null : Boolean(data.can_use_instant_voice_cloning),
       };
     } catch (error) {
       return { error: `Could not reach ElevenLabs: ${error.message}` };

@@ -20,6 +20,15 @@ export const CAPTION_STYLES = {
 
 const CAPTION_FONT = process.env.CAPTION_FONT || (process.platform === "win32" ? "Arial" : "DejaVu Sans");
 
+// How hard the video encoder works. Faster settings finish sooner and make somewhat bigger files (Admin → App settings).
+const EXPORT_SPEEDS = { balanced: ["veryfast", "22"], fast: ["superfast", "24"], fastest: ["ultrafast", "26"] };
+
+/** FFmpeg arguments for drawing a new video, at the speed the admin chose. */
+export function videoEncodeArgs() {
+  const [preset, crf] = EXPORT_SPEEDS[config.exportSpeed] || EXPORT_SPEEDS.fast;
+  return ["-c:v", "libx264", "-preset", preset, "-crf", crf, "-pix_fmt", "yuv420p"];
+}
+
 export async function assertAudibleAudio(filePath) {
   const info = await getMediaInfo(filePath);
   if (!info.streams.some((stream) => stream.codec_type === "audio")) {
@@ -102,7 +111,7 @@ export async function mergeAudioVideo(videoPath, audioPath, outputVideoPath, { w
   }
 
   const videoArgs = filters.length
-    ? ["-filter_complex", `[0:v:0]${filters.join(",")}[v]`, "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]
+    ? ["-filter_complex", `[0:v:0]${filters.join(",")}[v]`, "-map", "[v]", ...videoEncodeArgs()]
     : ["-map", "0:v:0", "-c:v", "copy"];
   await run("ffmpeg", [
     "-y", "-i", videoPath, "-i", audioPath,
