@@ -1069,3 +1069,6 @@ details.danger-zone[open] { display: grid; gap: 10px; }
 .preflight-block { border: 1px solid #f3b8b0; color: #8f2a1c; background: #fdecea; }
 .preflight-block p, .preflight-warn p { margin: 4px 0 0; }
 .preflight-warn { border: 1px solid #f0dc9a; color: #6d5410; background: #fff8e0; }
+
+.step-now { display: flex; gap: 10px; align-items: flex-start; margin: 14px 0 0; color: inherit; opacity: .92; font-size: 13.5px; line-height: 1.5; }
+.step-now svg { flex: 0 0 auto; margin-top: 3px; }

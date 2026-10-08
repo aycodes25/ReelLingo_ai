@@ -67,6 +67,18 @@ export function progressPercent(job: Job): number {
   return Math.round(((stageIndex(job.current_step) + 0.5) / PIPELINE_STAGES.length) * 100);
 }
 
+/** What is happening right now, in plain words, for the progress card (and how long the slow steps usually take). */
+export const STEP_DETAIL: Record<string, string> = {
+  separating: "Separating the background music from the voices. This is the slowest step: on a normal computer it can take about three times the length of your video.",
+  dubbing: "Creating the new voice, line by line. Cloned voices take a little longer.",
+  transcribing: "Listening to the speech and writing it down with timestamps.",
+  translating: "Translating each line.",
+  mixing: "Mixing the new voice over the original background sound.",
+  merging: "Putting the new audio into your video.",
+  rendering: "Making the captioned and resized copies.",
+  lip_syncing: "Matching lip movements to the new voice. This can take a while.",
+};
+
 export const STEP_MESSAGES: Record<string, string> = {
   queued: "Video received and queued for processing.",
   importing: "Downloading your video from the link.",

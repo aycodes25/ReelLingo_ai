@@ -10,7 +10,7 @@ import AppShell, { SUPPORT_EMAIL } from "@/components/AppShell";
 import Loader3D from "@/components/Loader3D";
 import WaitingMusic from "@/components/WaitingMusic";
 import { getApiHealth, getJob, getLanguages, retryJob, streamJob } from "@/lib/api";
-import { clock, languageName, PIPELINE_STAGES, progressPercent, projectFileName, sourceLabel, stageIndex, STEP_MESSAGES } from "@/lib/format";
+import { clock, languageName, PIPELINE_STAGES, progressPercent, projectFileName, sourceLabel, stageIndex, STEP_DETAIL, STEP_MESSAGES } from "@/lib/format";
 import type { Job, LanguageOption, WaitingMusicSettings } from "@/lib/types";
 
 const STAGE_ICONS = [Upload, FileText, Languages, Mic, Merge, Captions, Download];
@@ -164,6 +164,9 @@ export default function JobStatusPage() {
             </div>
             <div className="progress-track" role="progressbar" aria-valuenow={percent} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${failed ? 100 : percent}%` }} /></div>
             <div className="progress-labels"><span>Uploading &amp; Processing</span><span>Merging &amp; Finalizing</span></div>
+            {job && job.status === "processing" && STEP_DETAIL[job.current_step] && (
+              <p className="step-now" role="status"><LoaderCircle size={14} className="spin" /><span><strong>Right now:</strong> {STEP_DETAIL[job.current_step]} Nothing is stuck: the bar moves when this step finishes.</span></p>
+            )}
             {job && (job.status === "queued" || job.status === "processing") && (
               <div className="wait-row">
                 <Loader3D label="Working on your video" />

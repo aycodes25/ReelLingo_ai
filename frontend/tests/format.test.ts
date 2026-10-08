@@ -37,3 +37,12 @@ describe("formatting", () => {
     expect(segmentsToVtt([{ start: 1.5, end: 3.25, text: "Hello", language: "en" }])).toBe("WEBVTT\n\n1\n00:00:01.500 --> 00:00:03.250\nHello\n");
   });
 });
+
+describe("what's happening right now", () => {
+  it("explains the slow steps in plain words, for steps the pipeline really has", async () => {
+    const { STEP_DETAIL, STEP_MESSAGES } = await import("@/lib/format");
+    for (const step of Object.keys(STEP_DETAIL)) expect(STEP_MESSAGES[step], `${step} is a real step`).toBeTruthy();
+    expect(STEP_DETAIL.separating).toMatch(/slowest step/);
+    expect(STEP_DETAIL.separating).toMatch(/three times the length of your video/);
+  });
+});
