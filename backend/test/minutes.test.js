@@ -213,3 +213,39 @@ test("referral rewards wait for a payment big enough to pay for them", async () 
   assert.ok(report.referral.qualifying.includes("Starter (monthly)"));
   assert.ok(!report.referral.qualifying.includes("Subtitles (monthly)"));
 });
+
+test("a late renewal (grace period) keeps the same allowance month instead of handing out a fresh one", () => {
+  // The plan ended on 1 Nov; on 2 Nov it is still active. Minutes spent on 25 Oct must still count.
+  const grace = minutes.allowanceWindow("2026-11-01T00:00:00Z", new Date("2026-11-02T00:00:00Z"));
+  assert.equal(grace.start.toISOString(), "2026-10-01T00:00:00.000Z", "not the calendar month, which would start on 1 Nov and forget 25 Oct");
+  assert.equal(grace.end.toISOString(), "2026-11-01T00:00:00.000Z");
+  // Mid-month billing day: the window is the month that just ended.
+  assert.equal(minutes.allowanceWindow("2026-11-15T10:00:00Z", new Date("2026-11-17T00:00:00Z")).start.toISOString(), "2026-10-15T10:00:00.000Z");
+  // Across a year boundary.
+  assert.equal(minutes.allowanceWindow("2027-01-02T00:00:00Z", new Date("2027-01-03T00:00:00Z")).start.toISOString(), "2026-12-02T00:00:00.000Z");
+  // Past the grace period the plan is gone and the free calendar month applies again.
+  assert.equal(minutes.allowanceWindow("2026-11-01T00:00:00Z", new Date("2026-11-10T00:00:00Z")).start.toISOString(), "2026-11-01T00:00:00.000Z");
+});
+
+test("spending during the grace period counts against the old month's allowance", async () => {
+  const end = new Date(Date.now() - 24 * 3600 * 1000);
+  await activateSubscription("late", "starter", { periodEnd: end });
+  const job = await database.createJob({ user_id: "late", source_language: "yo", target_language: "en", options_json: { charge: minutes.newCharge(16, "job") } });
+  // Spent just before the plan ended, i.e. inside the month that is still being counted.
+  await query("INSERT INTO minute_ledger (billing_id, delta, bucket, kind, job_id, reference, created_at) VALUES ('late', -16, 'plan', 'job', $1, $2, $3)", [job.id, job.options_json.charge.run, new Date(end.getTime() - 3600 * 1000).toISOString().slice(0, 19).replace("T", " ")]);
+  const plan = await planFor({ userId: "late" });
+  assert.equal(plan.tier, "starter", "still on the paid plan during the grace period");
+  assert.equal(plan.minutes.plan_left, 0, "the 16 minutes already spent are not forgotten");
+  assert.equal(plan.minutes.available, 0);
+});
+
+test("two uploads at the same moment can't both spend the same minutes", async () => {
+  await minutes.grantMinutes("racer", 5, "pack", { reference: "race-pack" });
+  const jobs = await Promise.all([1, 2, 3].map((index) => database.createJob({
+    user_id: "racer", source_language: "yo", target_language: ["en", "fr", "ha"][index - 1], options_json: { charge: minutes.newCharge(2, "job") },
+  })));
+  const results = await Promise.allSettled(jobs.map((job) => minutes.ensureCharged(job, { billingId: "racer", allowance: 0, periodEnd: null })));
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 2, "only 2 of the 3 two-minute jobs fit in 5 minutes");
+  assert.ok(results.filter((result) => result.status === "rejected").every((result) => result.reason instanceof minutes.NotEnoughMinutes));
+  assert.equal((await minutes.minuteBalance("racer")).topup_left, 1, "never overspent");
+});

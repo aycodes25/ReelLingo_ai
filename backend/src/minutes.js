@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { config } from "./config.js";
-import { dbTime, many, one, query } from "./db.js";
+import { dbTime, many, one, query, withDbLock } from "./db.js";
 
 /**
  * Minutes are ReelLingo's single unit of value: 1 minute = 1 minute of video dubbed into 1 language.
@@ -11,6 +11,9 @@ import { dbTime, many, one, query } from "./db.js";
  *  - "topup": minutes bought in packs, referral rewards and admin grants. They never expire.
  * Spending always uses plan minutes first. Every change is a row in minute_ledger, so balances can be audited.
  */
+
+/** How long a paid plan stays active after its period ends, to give a late renewal time to arrive. */
+export const SUBSCRIPTION_GRACE_MS = 3 * 24 * 3600 * 1000;
 
 const round1 = (value) => Math.round(Number(value || 0) * 10) / 10;
 const ceil1 = (value) => Math.ceil(Number(value || 0) * 10 - 1e-9) / 10;
@@ -61,12 +64,18 @@ export function allowanceWindow(periodEnd, now = new Date()) {
       const next = anchoredDate(end, year, month + 1);
       return { start, end: next < end ? next : end };
     }
+    // Renewal is late but the plan is still active (grace period): stay in the last allowance month.
+    // Switching to the calendar month here would forget what was already spent and hand out a fresh allowance.
+    if (!Number.isNaN(end.getTime()) && now.getTime() - end.getTime() <= SUBSCRIPTION_GRACE_MS) {
+      return { start: anchoredDate(end, end.getUTCFullYear(), end.getUTCMonth() - 1), end };
+    }
   }
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   return { start, end: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)) };
 }
 
-// One balance change at a time per account inside this process, so two uploads can't both spend the same minutes.
+// One balance change at a time per account, so two uploads can't both spend the same minutes. The in-process queue
+// keeps one request per account waiting on the database; the database lock covers other servers and the worker.
 const locks = new Map();
 export async function withAccountLock(billingId, task) {
   const previous = locks.get(billingId) || Promise.resolve();
@@ -76,7 +85,7 @@ export async function withAccountLock(billingId, task) {
   locks.set(billingId, chained);
   await previous;
   try {
-    return await task();
+    return await withDbLock(`minutes:${billingId}`, task);
   } finally {
     release();
     if (locks.get(billingId) === chained) locks.delete(billingId);

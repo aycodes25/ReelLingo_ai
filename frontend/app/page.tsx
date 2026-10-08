@@ -293,7 +293,7 @@ export default async function LandingPage() {
           </div>
           <div className="footer-bottom">
             <span>© {new Date().getFullYear()} ReelLingo AI. All rights reserved.</span>
-            <div><span>Lagos, Nigeria</span><i /><span>Nairobi, Kenya</span></div>
+            <div><span>Abuja, Nigeria</span><i /></div>
           </div>
         </div>
       </footer>

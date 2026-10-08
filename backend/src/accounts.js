@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { config } from "./config.js";
 import { getMonthlyUsage, getSubscription } from "./database.js";
 import { many, one, query, toBool } from "./db.js";
-import { grantMinutes, minuteBalance } from "./minutes.js";
+import { grantMinutes, minuteBalance, SUBSCRIPTION_GRACE_MS } from "./minutes.js";
 import { getPlan } from "./plans.js";
 
 /** Billing identity of a workspace: a user's own account, or a team (shared plan and credits). */
@@ -13,7 +13,7 @@ export function billingIdFor({ userId, teamId = null }) {
 function subscriptionActive(subscription) {
   if (!subscription || subscription.status === "canceled" || subscription.status === "inactive") return false;
   if (!subscription.current_period_end) return true;
-  return new Date(subscription.current_period_end).getTime() > Date.now() - 3 * 24 * 3600 * 1000;
+  return new Date(subscription.current_period_end).getTime() > Date.now() - SUBSCRIPTION_GRACE_MS;
 }
 
 // Per-account limits an admin can set on top of the plan (e.g. an enterprise customer with custom terms).

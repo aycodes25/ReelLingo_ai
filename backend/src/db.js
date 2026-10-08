@@ -241,6 +241,38 @@ export async function query(sql, params = []) {
   return sqliteQuery(sql, params);
 }
 
+let lockPool;
+
+/**
+ * Runs `task` while holding a lock that is shared by every server and worker connected to the same database.
+ * Postgres uses an advisory lock (no tables or schema changes needed); the lock is held on its own small pool so
+ * waiting for locks can never use up the connections the task itself needs. SQLite is a single process, so callers
+ * only need their in-process lock there.
+ */
+export async function withDbLock(key, task, { timeoutMs = 30_000 } = {}) {
+  if (!isPostgres) return task();
+  lockPool ||= new Pool({ connectionString: config.databaseUrl, ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false } : undefined, max: 5 });
+  const client = await lockPool.connect();
+  let locked = false;
+  try {
+    await client.query(`SET lock_timeout = ${Math.round(timeoutMs)}`);
+    await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [String(key)]);
+    locked = true;
+    return await task();
+  } finally {
+    // A connection that failed to unlock must not go back to the pool still holding the lock.
+    let broken = false;
+    if (locked) {
+      try {
+        await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [String(key)]);
+      } catch {
+        broken = true;
+      }
+    }
+    client.release(broken);
+  }
+}
+
 export async function many(sql, params = []) {
   return (await query(sql, params)).rows;
 }
@@ -376,7 +408,8 @@ export async function initializeDatabase() {
 export async function closeDatabase() {
   sqlite?.close();
   sqlite = null;
-  const closing = pool?.end();
+  const closing = [pool?.end(), lockPool?.end()];
   pool = null;
-  await closing;
+  lockPool = null;
+  await Promise.all(closing);
 }
