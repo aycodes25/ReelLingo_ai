@@ -291,11 +291,12 @@ export default function NewProjectForm({ languages, usage, health, setupProblem 
             <label className="field-label" htmlFor="captions">Burned-in captions{!allowed("captions") && <Lock size={12} />}</label>
             <div className="select-wrap">
               <select id="captions" className="select" value={captions} disabled={!allowed("captions")} onChange={(event) => setCaptions(event.target.value)}>
-                <option value="">{allowed("captions") ? "None (SRT/VTT files only)" : "Not in your plan"}</option>
+                <option value="">{allowed("captions") ? "None for now (subtitle files only)" : "Not in your plan"}</option>
                 {CAPTION_STYLES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
               </select>
               <ChevronDown size={17} />
             </div>
+            <small className="field-hint">Not sure? Skip it: when your video is ready you can add subtitles to it with one click.</small>
           </div>}
           {on("formats") && <div className="field advanced-wide">
             <span className="field-label">Extra formats{!allowed("formats") && <> <Lock size={12} /> <small className="field-hint">{lockHint}</small></>}</span>

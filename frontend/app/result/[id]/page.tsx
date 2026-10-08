@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
-  ArrowRight, AudioLines, ChevronRight, CircleAlert, CircleCheck, Clapperboard, Copy, Download, Facebook, FileAudio, FileText, FileVideo, Globe, Hash,
+  ArrowRight, AudioLines, Captions, ChevronRight, CircleAlert, CircleCheck, Clapperboard, Copy, Download, Facebook, FileAudio, FileText, FileVideo, Globe, Hash,
   ImageIcon, Languages, Linkedin, LoaderCircle, Mail, MessageCircle, Mic, PencilLine, RotateCcw, Scissors, Share2, Sparkles, Trash2, Twitter, UserCheck,
   Volume2, Youtube,
 } from "lucide-react";
@@ -12,8 +12,9 @@ import AppShell from "@/components/AppShell";
 import VideoPlayer, { type VideoPlayerHandle } from "@/components/VideoPlayer";
 import {
   addLanguageToYoutube, ApiError, deleteJob, getApiHealth, getIntegrations, getJob, getJobs, getLanguages, getVoices, getYoutubeVideos, publishToYoutube,
-  requestClips, saveVoiceFromJob, shareJob,
+  requestCaptions, requestClips, saveVoiceFromJob, shareJob,
 } from "@/lib/api";
+import { CAPTION_STYLES } from "@/lib/options";
 import {
   clock, downloadText, formatMinutes, languageName, projectFileName, projectTitle, relativeTime, segmentsToText, sourceLabel, timestamp,
 } from "@/lib/format";
@@ -45,6 +46,7 @@ export default function ResultPage() {
   const [voiceSlots, setVoiceSlots] = useState<{ used: number; limit: number } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [features, setFeatures] = useState<Record<string, boolean>>({});
+  const [captionStyle, setCaptionStyle] = useState("classic");
   const [weights, setWeights] = useState<MinuteWeights | null>(null);
   const [ytVideos, setYtVideos] = useState<YoutubeVideo[] | null>(null);
   const [ytVideo, setYtVideo] = useState("");
@@ -65,12 +67,13 @@ export default function ResultPage() {
     }).catch(() => undefined);
   }, [jobId]);
 
-  // Poll while short clips are being made.
+  // Poll while short clips are being made, or while subtitles are being put on the video.
+  const working = Boolean(job?.clips_pending || job?.captions_pending);
   useEffect(() => {
-    if (!job?.clips_pending) return;
+    if (!working) return;
     const timer = setInterval(() => { getJob(jobId).then(setJob).catch(() => undefined); }, 4000);
     return () => clearInterval(timer);
-  }, [job?.clips_pending, jobId]);
+  }, [working, jobId]);
 
   // Poll while a YouTube upload is running.
   useEffect(() => {
@@ -87,7 +90,7 @@ export default function ResultPage() {
   const activeIndex = segments.findIndex((segment) => time >= segment.start && time < segment.end);
   const crumbs = [{ label: "Dashboard", href: "/dashboard" }, { label: "Projects", href: "/projects" }, { label: job ? projectFileName(job) : `Project #${params.id}` }];
 
-  if (errorMessage || !job || (job.status !== "done" && !job.clips_pending)) {
+  if (errorMessage || !job || (job.status !== "done" && !job.clips_pending && !job.captions_pending)) {
     return (
       <AppShell crumbs={crumbs}>
         {errorMessage ? (
@@ -116,6 +119,7 @@ export default function ResultPage() {
   const subtitlesOnly = job.options.mode === "subtitles";
   const videoOutputs = job.outputs.filter((output) => output.kind !== "subtitles" && output.kind !== "clip");
   const clips = job.outputs.filter((output) => output.kind === "clip");
+  const burnedIn = job.outputs.find((output) => output.kind === "captioned");
   const dubbedAudio = job.outputs.find((output) => output.kind === "audio");
   const subtitleOutputs = job.outputs.filter((output) => output.kind === "subtitles");
   const redubsLeft = job.max_redubs - job.redub_count;
@@ -183,6 +187,18 @@ export default function ResultPage() {
       setNotice(`Saved “${name}”. Choose “My saved voice” when you create your next project.`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not save the voice.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function addSubtitles() {
+    setBusy("captions");
+    setNotice(null);
+    try {
+      setJob(await requestCaptions(job!.id, captionStyle)); // the banner above says it's working, and the page updates itself
+    } catch (error) {
+      setNotice(error instanceof ApiError && error.status === 402 ? `${error.message} You can upgrade on the Billing page.` : error instanceof Error ? error.message : "Could not add the subtitles.");
     } finally {
       setBusy(null);
     }
@@ -269,6 +285,7 @@ export default function ResultPage() {
       )}
       {notice && <div role="status" className="alert alert-success" style={{ marginBottom: 24 }}><CircleCheck size={16} /><span>{notice}</span></div>}
       {job.review_note && <div className="alert alert-info" style={{ marginBottom: 24 }}><UserCheck size={16} /><span>{job.review_note}</span></div>}
+      {job.captions_pending && <div role="status" className="alert alert-info" style={{ marginBottom: 24 }}><LoaderCircle size={16} className="spin" /><span>Adding the subtitles to your video… this usually takes a minute or two.</span></div>}
       {job.clips_pending && <div role="status" className="alert alert-info" style={{ marginBottom: 24 }}><LoaderCircle size={16} className="spin" /><span>Making your short clips… this usually takes a few minutes.</span></div>}
       {job.batch && job.batch.length > 1 && (
         <div className="batch-strip" aria-label="Other languages from this upload">
@@ -304,6 +321,29 @@ export default function ResultPage() {
                 <div><dt>Description</dt><dd>{job.metadata.description}</dd></div>
                 <div><dt><Hash size={14} />Hashtags</dt><dd className="hashtags">{job.metadata.hashtags.map((tag) => <span key={tag}>{tag}</span>)}</dd></div>
               </dl>
+            </section>
+          )}
+
+          {job.media_type !== "audio" && features.captions !== false && !job.files_expired && (
+            <section className="card card-pad captions-card" aria-labelledby="captions-title">
+              <h2 id="captions-title"><Captions size={18} />Video with subtitles on the screen</h2>
+              <p className="card-sub">Puts the words right on the picture, so they show while the video plays: on any phone, in WhatsApp, on TikTok or on a TV. No separate subtitle file needed.</p>
+              {burnedIn?.download_url && !job.captions_pending && (
+                <div className="captions-ready">
+                  {burnedIn.url && <video src={burnedIn.url} controls preload="metadata" playsInline aria-label="Your video with subtitles on the screen" />}
+                  <a className="btn btn-primary" href={burnedIn.download_url} download><Download size={16} />Download video with subtitles</a>
+                </div>
+              )}
+              <div className="captions-controls">
+                <label className="field-label" htmlFor="caption-style">Subtitle style</label>
+                <select id="caption-style" className="select" value={captionStyle} onChange={(event) => setCaptionStyle(event.target.value)} disabled={Boolean(job.captions_pending)}>
+                  {CAPTION_STYLES.map((style) => <option key={style.value} value={style.value}>{style.label}</option>)}
+                </select>
+                <button type="button" className={burnedIn ? "btn btn-outline" : "btn btn-primary"} onClick={addSubtitles} disabled={busy === "captions" || Boolean(job.captions_pending)}>
+                  {job.captions_pending ? "Adding subtitles…" : burnedIn ? "Make it again in this style" : "Add subtitles to my video"}
+                </button>
+              </div>
+              <small className="card-sub">No minutes used. {subtitlesOnly ? "The subtitles go on your original video." : "The subtitles go on your dubbed video."}</small>
             </section>
           )}
 

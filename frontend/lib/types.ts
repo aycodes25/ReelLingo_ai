@@ -91,6 +91,9 @@ export interface Job {
   review_state: "pending" | "approved" | "human_pending" | null;
   minutes_charged: number | null;
   clips_pending: boolean;
+  /** True while the subtitles are being put on the video itself (the "video with subtitles" download). */
+  captions_pending?: boolean;
+  caption_style?: string | null;
   youtube_languages: YoutubeLanguageResult[];
   human_reviewed_at: string | null;
   review_note: string | null;

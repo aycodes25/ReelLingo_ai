@@ -981,6 +981,12 @@ details.danger-zone[open] { display: grid; gap: 10px; }
 .stat-row strong { color: var(--ink); font-family: var(--font-display); font-size: 22px; overflow-wrap: anywhere; }
 
 /* ---------- Result page: clips and YouTube languages ---------- */
+.captions-card { display: grid; gap: 12px; }
+.captions-card h2 { display: flex; align-items: center; gap: 8px; }
+.captions-ready { display: grid; gap: 12px; justify-items: start; }
+.captions-ready video { width: 100%; max-height: 320px; border-radius: 12px; background: #000; }
+.captions-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.captions-controls .select { max-width: 280px; }
 .clips-card { display: grid; gap: 12px; }
 .clips-card .transcript-head h2 { display: flex; align-items: center; gap: 8px; }
 .clip-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; }

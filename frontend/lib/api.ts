@@ -562,6 +562,11 @@ export function requestClips(jobId: number): Promise<Job> {
   return request<Job>(`/jobs/${jobId}/clips`, { method: "POST", context: "Could not start the clips" });
 }
 
+/** Puts the subtitles on the video itself (burned in) so they show while it plays. Uses no minutes. */
+export function requestCaptions(jobId: number, style: string): Promise<Job> {
+  return request<Job>(`/jobs/${jobId}/captions`, { method: "POST", json: { style }, context: "Could not add the subtitles to the video" });
+}
+
 export function getYoutubeVideos(page = ""): Promise<{ videos: YoutubeVideo[]; next_page: string | null; channel: string }> {
   return request(`/integrations/youtube/videos${page ? `?page=${encodeURIComponent(page)}` : ""}`, { context: "Could not load your YouTube videos" });
 }
