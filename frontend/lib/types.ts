@@ -93,6 +93,8 @@ export interface Job {
   clips_pending: boolean;
   /** True while the subtitles are being put on the video itself (the "video with subtitles" download). */
   captions_pending?: boolean;
+  /** The dubbed video is ready; captioned and resized copies are still being made behind it. */
+  extras_pending?: boolean;
   caption_style?: string | null;
   youtube_languages: YoutubeLanguageResult[];
   human_reviewed_at: string | null;

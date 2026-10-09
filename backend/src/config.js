@@ -53,6 +53,13 @@ export const config = {
   transcriptionProvider: process.env.TRANSCRIPTION_PROVIDER || "openai",
   // Background separation: "auto" | "demucs" | "elevenlabs" | "ffmpeg" | "none".
   separationProvider: process.env.SEPARATION_PROVIDER || "auto",
+  // If nobody is speaking and the sound is almost silent, there's no music to keep: skip the slow separation altogether.
+  skipQuietBackground: process.env.SKIP_QUIET_BACKGROUND !== "false",
+  quietBackgroundDb: number("QUIET_BACKGROUND_DB", -40),
+  // Language identification is an extra AI call; when the creator named the source language it isn't needed.
+  detectLanguagesAlways: process.env.DETECT_LANGUAGES_ALWAYS === "true",
+  // Show the dubbed video as soon as it's ready; captioned and resized copies keep rendering behind it.
+  deferExtras: process.env.DEFER_EXTRAS !== "false",
   // Demucs (the free background-music remover) runs on this computer's processor, roughly this many seconds of work for
   // every second of video. When that would take longer than the limit below, a much faster method is used instead.
   demucsSecondsPerVideoSecond: number("DEMUCS_SECONDS_PER_VIDEO_SECOND", 2),

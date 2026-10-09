@@ -45,6 +45,17 @@ function mockApi(job: Job, { captions = true, onCaptions, refuse }: { captions?:
 
 afterEach(() => vi.restoreAllMocks());
 
+describe("extra versions still being made", () => {
+  it("shows the dubbed video straight away, and says the extras are coming", async () => {
+    mockApi(makeJob({ status: "processing", current_step: "rendering", extras_pending: true }));
+    render(<ResultPage />);
+    expect(await screen.findByText(/Your dubbed video is ready./)).toBeInTheDocument();
+    expect(screen.getByText(/still making the extra versions you asked for/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Dubbed video/ })).toHaveAttribute("href", "https://files/dub.mp4?download=1");
+    expect(screen.queryByText("This video is still in progress")).not.toBeInTheDocument();
+  });
+});
+
 describe("video with subtitles on the screen", () => {
   it("offers it on a finished project, and asks for the chosen style", async () => {
     const pending = makeJob({ captions_pending: true, status: "queued" });
