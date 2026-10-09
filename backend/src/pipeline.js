@@ -22,7 +22,7 @@ import {
   CAPTION_STYLES, assertAudibleAudio, displaySize, exportAudioOnly, generateSrt, generateVtt, mergeAudioVideo, writeAss, ASPECTS, aspectSize, encodeAudio,
 } from "./render.js";
 import { openReviewTask } from "./reviews.js";
-import { mixDubWithBackground, separateBackground } from "./separation.js";
+import { measureQuietGaps, mixDubWithBackground, separateBackground } from "./separation.js";
 import { deleteFiles, downloadFile, fileExists, getSignedUrl, uploadBuffer, uploadFile } from "./storage.js";
 import { transcribe } from "./transcription.js";
 import { detectSegmentLanguages, generateMetadata, translate } from "./translation.js";
@@ -260,14 +260,30 @@ export async function processJob(job, { localInputPath = null } = {}) {
         const result = await transcribe(audioPath, workdir, job.source_language, {
           multiSpeaker: Boolean(options.multi_speaker), vocabulary, durationSeconds, onNote: (note) => notes.push(note),
         });
-        await step("detecting_languages");
-        transcript = await detectSegmentLanguages(result.segments, undefined, job.source_language);
+        if (job.source_language === "auto" || config.detectLanguagesAlways) {
+          await step("detecting_languages");
+          transcript = await detectSegmentLanguages(result.segments, undefined, job.source_language);
+        } else {
+          // The creator named the language, so there's no need to ask an AI which language each line is in.
+          transcript = result.segments.map((segment) => ({ ...segment, language: getLanguage(segment.language) && segment.language !== "und" ? segment.language : job.source_language }));
+        }
         const detectedLanguages = [...new Set([
           ...transcript.map((segment) => segment.language).filter((code) => getLanguage(code)),
           ...result.chunkLanguages,
         ])];
         speakers = result.speakers.length ? result.speakers.map((id, index) => ({ id, label: `Speaker ${index + 1}` })) : null;
         await updateJob(job.id, { transcript_json: transcript, detected_languages_json: detectedLanguages, speakers_json: speakers, duration_seconds: durationSeconds });
+      }
+    }
+
+    // Now that we know where people speak, listen to the gaps between them. If those are nearly silent there is no music or effects
+    // to keep, so the (slow) separation running since the start is cancelled and the dub simply plays on its own.
+    if (backgroundTask && !backgroundSettled && config.skipQuietBackground) {
+      const gaps = await measureQuietGaps(audioPath, transcript, durationSeconds).catch(() => null);
+      if (gaps && gaps.meanDb <= config.quietBackgroundDb) {
+        logger.info({ jobId: job.id, ...gaps }, "No background sound between the lines, so background separation was skipped");
+        stopBackground.abort();
+        notes.push("No background music was detected, so the dub plays on its own.");
       }
     }
 
@@ -347,6 +363,7 @@ export async function processJob(job, { localInputPath = null } = {}) {
 
     await step("merging");
     const watermark = Boolean(options.watermark);
+    const earlierOutputs = (await getJob(job.id))?.outputs_json || []; // from a previous run: replaced (and deleted) when the new ones are ready
     const outputs = [];
     const prefix = `jobs/${job.id}`;
     const version = Date.now().toString(36);
@@ -370,7 +387,34 @@ export async function processJob(job, { localInputPath = null } = {}) {
     outputs.push({ kind: "subtitles", format: "srt", label: "Subtitles (SRT)", path: srtPath });
     outputs.push({ kind: "subtitles", format: "vtt", label: "Subtitles (VTT)", path: await uploadBuffer(`${prefix}/subtitles.vtt`, Buffer.from(generateVtt(translated)), "text/vtt; charset=utf-8") });
 
-    if (!isAudioOnly && (options.captions || options.formats?.length)) {
+    // Captioned and resized copies, and lip-sync, take a while. The dubbed video itself is ready now, so show it
+    // and keep making the extras behind it (a failure there only costs the extras, not the dub).
+    const extrasWanted = !isAudioOnly && Boolean(options.captions || options.formats?.length || options.lip_sync);
+    let mainShown = false;
+    if (extrasWanted && config.deferExtras) {
+      await Promise.all(pendingSaves);
+      const current = await getJob(job.id);
+      await updateJob(job.id, {
+        output_video_path: mainPath, output_srt_path: srtPath, completed_at: new Date().toISOString(),
+        outputs_json: [...outputs, ...earlierOutputs.filter((output) => output.kind === "clip")],
+        options_json: { ...current.options_json, extras_running: true },
+        processing_note: notes.length ? notes.join(" ") : null,
+      });
+      await notifyJob(await getJob(job.id), "done");
+      mainShown = true;
+    }
+    const extra = async (task) => {
+      if (!mainShown) return task();
+      try {
+        await task();
+      } catch (error) {
+        if (error instanceof JobSuperseded) throw error;
+        logger.warn({ err: error, jobId: job.id }, "An extra version could not be made");
+        notes.push(`An extra version (captions, sizes or lip-sync) could not be made: ${friendlyError(error).text}`);
+      }
+    };
+
+    if (!isAudioOnly && (options.captions || options.formats?.length)) await extra(async () => {
       await step("rendering");
       const size = displaySize(info);
       if (options.captions) {
@@ -392,10 +436,10 @@ export async function processJob(job, { localInputPath = null } = {}) {
         outputs.push(output);
         save(output.path, variant, "video/mp4");
       }
-    }
+    });
 
     await Promise.all(pendingSaves); // lip-sync reads the saved video, and the files must be there before anything is shown as ready
-    if (!isAudioOnly && options.lip_sync) {
+    if (!isAudioOnly && options.lip_sync) await extra(async () => {
       await step("lip_syncing");
       try {
         const lipsyncPath = join(workdir, "lipsync.mp4");
@@ -410,10 +454,10 @@ export async function processJob(job, { localInputPath = null } = {}) {
       } catch (error) {
         notes.push(`Lip-sync could not be completed: ${error.message}`);
       }
-    }
+    });
 
     const previous = await getJob(job.id);
-    const oldPaths = (previous?.outputs_json || []).map((output) => output.path).filter((path) => !outputs.some((output) => output.path === path));
+    const oldPaths = earlierOutputs.map((output) => output.path).filter((path) => !outputs.some((output) => output.path === path));
     // Clips made from an earlier version of the dub are kept until new ones are made.
     const keptClips = (previous?.outputs_json || []).filter((output) => output.kind === "clip");
     await updateJob(job.id, {
@@ -421,7 +465,7 @@ export async function processJob(job, { localInputPath = null } = {}) {
       output_srt_path: srtPath,
       outputs_json: [...outputs, ...keptClips],
       processing_note: notes.length ? notes.join(" ") : null,
-      options_json: { ...(await getJob(job.id)).options_json, dubbed_hashes: translated.map((segment) => lineHash(segment.text)) },
+      options_json: { ...(await getJob(job.id)).options_json, dubbed_hashes: translated.map((segment) => lineHash(segment.text)), extras_running: undefined },
       status: "done",
       current_step: "done",
       completed_at: new Date().toISOString(),
@@ -429,7 +473,7 @@ export async function processJob(job, { localInputPath = null } = {}) {
     });
     if (oldPaths.length) await deleteFiles(oldPaths.filter((path) => !keptClips.some((clip) => clip.path === path))).catch(() => undefined);
     const finished = await getJob(job.id);
-    await notifyJob(finished, "done");
+    if (!mainShown) await notifyJob(finished, "done"); // already told them when the dubbed video was ready
     return finished;
   } catch (error) {
     // Another attempt owns this job now. It carries on from the saved steps; this one just stops.

@@ -68,7 +68,7 @@ export default function ResultPage() {
   }, [jobId]);
 
   // Poll while short clips are being made, or while subtitles are being put on the video.
-  const working = Boolean(job?.clips_pending || job?.captions_pending);
+  const working = Boolean(job?.clips_pending || job?.captions_pending || job?.extras_pending);
   useEffect(() => {
     if (!working) return;
     const timer = setInterval(() => { getJob(jobId).then(setJob).catch(() => undefined); }, 4000);
@@ -90,7 +90,7 @@ export default function ResultPage() {
   const activeIndex = segments.findIndex((segment) => time >= segment.start && time < segment.end);
   const crumbs = [{ label: "Dashboard", href: "/dashboard" }, { label: "Projects", href: "/projects" }, { label: job ? projectFileName(job) : `Project #${params.id}` }];
 
-  if (errorMessage || !job || (job.status !== "done" && !job.clips_pending && !job.captions_pending)) {
+  if (errorMessage || !job || (job.status !== "done" && !job.clips_pending && !job.captions_pending && !job.extras_pending)) {
     return (
       <AppShell crumbs={crumbs}>
         {errorMessage ? (
@@ -285,6 +285,7 @@ export default function ResultPage() {
       )}
       {notice && <div role="status" className="alert alert-success" style={{ marginBottom: 24 }}><CircleCheck size={16} /><span>{notice}</span></div>}
       {job.review_note && <div className="alert alert-info" style={{ marginBottom: 24 }}><UserCheck size={16} /><span>{job.review_note}</span></div>}
+      {job.extras_pending && <div role="status" className="alert alert-info" style={{ marginBottom: 24 }}><LoaderCircle size={16} className="spin" /><span><strong>Your dubbed video is ready.</strong> We&apos;re still making the extra versions you asked for (subtitled video, other sizes). They&apos;ll appear here when they&apos;re done: no need to wait.</span></div>}
       {job.captions_pending && <div role="status" className="alert alert-info" style={{ marginBottom: 24 }}><LoaderCircle size={16} className="spin" /><span>Adding the subtitles to your video… this usually takes a minute or two.</span></div>}
       {job.clips_pending && <div role="status" className="alert alert-info" style={{ marginBottom: 24 }}><LoaderCircle size={16} className="spin" /><span>Making your short clips… this usually takes a few minutes.</span></div>}
       {job.batch && job.batch.length > 1 && (

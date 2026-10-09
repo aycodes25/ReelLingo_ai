@@ -22,7 +22,7 @@ await run("ffmpeg", ["-y", "-f", "lavfi", "-i", "sine=frequency=660:duration=0.8
 const toneBytes = await readFile(tone);
 
 // A stand-in for the OpenAI API: Whisper, chat (language ID, translation, metadata) and speech.
-const calls = { transcription: 0, chat: 0, speech: 0 };
+const calls = { transcription: 0, chat: 0, speech: 0, detect: 0 };
 const openaiServer = createServer((request, response) => {
   const chunks = [];
   request.on("data", (chunk) => chunks.push(chunk));
@@ -40,6 +40,7 @@ const openaiServer = createServer((request, response) => {
       const system = payload.messages[0].content;
       const user = payload.messages[1].content;
       let content;
+      if (system.includes("Identify the language")) calls.detect += 1;
       if (system.includes("social video metadata")) content = { title: "Welcome to Lagos", description: "A warm greeting.", hashtags: ["lagos", "#naija"] };
       else if (system.includes("short social-media clips")) content = { clips: [{ start_index: 0, end_index: 2, title: "The best bit" }, { start_index: 5, end_index: 5, title: "Too short" }] };
       else if (system.includes("Identify the language")) content = { segments: JSON.parse(user).map((item) => ({ index: item.index, language: "yo" })) };
@@ -334,4 +335,137 @@ test("short clips are cut from a finished dub as captioned vertical videos", asy
   const video = (await getMediaInfo(localPath(clips[0].path))).streams.find((stream) => stream.codec_type === "video");
   assert.ok(Number(video.height) > Number(video.width), "clips are vertical");
   assert.ok(job.outputs_json.some((output) => output.kind === "video"), "the original dub is kept");
+});
+
+// ---------- Faster processing ----------
+
+/** A 10-second video where someone speaks for the first 3 seconds only; `bed` is a steady sound (music) under everything. */
+async function sparseVideo(name, { bed = false } = {}) {
+  const path = join(dir, name);
+  const speech = "sine=frequency=300:duration=10,volume='if(between(t,0.2,1.3)+between(t,1.6,2.8),1,0)':eval=frame";
+  const inputs = ["-f", "lavfi", "-i", "color=c=green:s=320x240:d=10:r=24", "-f", "lavfi", "-i", speech];
+  const audio = bed
+    ? ["-f", "lavfi", "-i", "anoisesrc=d=10:c=pink:a=0.1", "-filter_complex", "[1:a][2:a]amix=inputs=2:duration=first:normalize=0,aformat=channel_layouts=stereo[a]"]
+    : ["-filter_complex", "[1:a]aformat=channel_layouts=stereo[a]"];
+  await run("ffmpeg", ["-y", ...inputs, ...audio, "-map", "0:v", "-map", "[a]", "-c:v", "libx264", "-c:a", "aac", "-shortest", path]);
+  const key = `uploads/${name}`;
+  await uploadFile(key, path);
+  return key;
+}
+
+test("no music between the lines: the slow background separation is cancelled and the dub plays on its own", async () => {
+  const input = await sparseVideo("quiet-gaps.mp4");
+  const job = await runJob(await database.createJob({
+    user_id: "creator", source_language: "yo", target_language: "en", voice_clone: false, input_storage_path: input, options_json: { keep_background: true },
+  }));
+  assert.equal(job.status, "done", job.error_message);
+  assert.match(job.processing_note, /No background music was detected, so the dub plays on its own/);
+  assert.equal(job.options_json.background_cached, undefined, "nothing was separated, so nothing was stored");
+  const audio = (await getMediaInfo(localPath(job.output_video_path))).streams.find((stream) => stream.codec_type === "audio");
+  assert.ok(audio, "the finished video still has sound (the dub)");
+});
+
+test("music between the lines: the background is kept", async () => {
+  const input = await sparseVideo("music-bed.mp4", { bed: true });
+  const job = await runJob(await database.createJob({
+    user_id: "creator", source_language: "yo", target_language: "en", voice_clone: false, input_storage_path: input, options_json: { keep_background: true },
+  }));
+  assert.equal(job.status, "done", job.error_message);
+  assert.equal(job.options_json.background_cached, true);
+  assert.ok(!/No background music was detected, so the dub plays on its own/.test(job.processing_note || ""));
+});
+
+test("the admin can switch the 'no music' shortcut off", async () => {
+  const { config } = await import("../src/config.js");
+  config.skipQuietBackground = false;
+  try {
+    const input = await sparseVideo("quiet-but-checked.mp4");
+    const job = await runJob(await database.createJob({
+      user_id: "creator", source_language: "yo", target_language: "en", voice_clone: false, input_storage_path: input, options_json: { keep_background: true },
+    }));
+    assert.equal(job.status, "done", job.error_message);
+    assert.ok(!/No background music was detected, so the dub plays on its own/.test(job.processing_note || ""), "separation ran as before");
+  } finally {
+    config.skipQuietBackground = true;
+  }
+});
+
+test("the language-identification AI call is skipped when the creator named the language", async () => {
+  const { config } = await import("../src/config.js");
+  const make = async (source) => runJob(await database.createJob({
+    user_id: "creator", source_language: source, target_language: "en", voice_clone: false, input_storage_path: await storedVideo(`detect-${source}-${calls.detect}.mp4`), options_json: { keep_background: false },
+  }));
+  const before = calls.detect;
+  const named = await make("yo");
+  assert.equal(named.status, "done", named.error_message);
+  assert.equal(calls.detect, before, "no identification call");
+  assert.ok(named.transcript_json.every((segment) => segment.language === "yo"), "every line carries the language the creator chose");
+  const auto = await make("auto");
+  assert.equal(auto.status, "done", auto.error_message);
+  assert.ok(calls.detect > before, "auto-detect still identifies the languages");
+  const afterAuto = calls.detect;
+  config.detectLanguagesAlways = true;
+  try {
+    await make("yo");
+    assert.ok(calls.detect > afterAuto, "the admin can ask for it every time");
+  } finally {
+    config.detectLanguagesAlways = false;
+  }
+});
+
+test("the dubbed video is shown first; captioned and resized copies keep rendering behind it", async () => {
+  const input = await storedVideo("extras-later.mp4");
+  const created = await database.createJob({
+    user_id: "creator", source_language: "yo", target_language: "en", voice_clone: false, input_storage_path: input,
+    options_json: { keep_background: false, captions: "classic", formats: ["1:1", "9:16"] },
+  });
+  const running = runJob(created);
+  let early = null;
+  for (let waited = 0; waited < 60000 && !early; waited += 15) {
+    const current = await database.getJob(created.id);
+    if (current.options_json.extras_running) early = current;
+    else await new Promise((resolve) => setTimeout(resolve, 15));
+  }
+  assert.ok(early, "the dubbed video was shown before the extras finished");
+  assert.equal(early.status, "processing", "still working on the extras");
+  assert.ok(early.output_video_path, "the dubbed video can already be watched and downloaded");
+  const kinds = early.outputs_json.map((output) => output.kind);
+  assert.ok(kinds.includes("video") && kinds.includes("audio") && kinds.includes("subtitles"));
+  assert.ok(!kinds.includes("captioned") && !kinds.includes("format"), "the extras aren't there yet");
+  const { jobOutput } = await import("../src/http.js");
+  assert.equal((await jobOutput(early, { detail: false })).extras_pending, true, "the studio is told to keep watching");
+
+  const finished = await running;
+  assert.equal(finished.status, "done", finished.error_message);
+  assert.equal(finished.options_json.extras_running, undefined);
+  const finalKinds = finished.outputs_json.map((output) => output.format || output.aspect || output.kind);
+  for (const kind of ["video", "captioned", "1:1", "9:16"]) assert.ok(finalKinds.includes(kind), `missing ${kind}`);
+  assert.equal((await jobOutput(finished, { detail: false })).extras_pending, false);
+});
+
+test("with the setting off, nothing is shown until everything is ready (as before)", async () => {
+  const { config } = await import("../src/config.js");
+  config.deferExtras = false;
+  try {
+    const input = await storedVideo("extras-now.mp4");
+    const created = await database.createJob({
+      user_id: "creator", source_language: "yo", target_language: "en", voice_clone: false, input_storage_path: input,
+      options_json: { keep_background: false, captions: "classic" },
+    });
+    const running = runJob(created);
+    let sawEarly = false;
+    const watcher = (async () => {
+      for (let index = 0; index < 400; index += 1) {
+        if ((await database.getJob(created.id)).options_json.extras_running) sawEarly = true;
+        await new Promise((resolve) => setTimeout(resolve, 15));
+      }
+    })();
+    const finished = await running;
+    assert.equal(finished.status, "done", finished.error_message);
+    await watcher;
+    assert.equal(sawEarly, false);
+    assert.ok(finished.outputs_json.some((output) => output.kind === "captioned"));
+  } finally {
+    config.deferExtras = true;
+  }
 });

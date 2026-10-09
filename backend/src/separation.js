@@ -81,6 +81,29 @@ export async function separateBackground(mixPath, workdir, durationSeconds, { si
   return { backgroundPath: null, provider: null, note: failures.length ? `Background audio could not be kept (${failures.join("; ")}).` : speedNote };
 }
 
+/**
+ * How loud is it where nobody is speaking? Cuts out the stretches between the transcript's lines and measures their average
+ * level (dB). A very quiet result means there is no music or effects to keep. Returns null when the speech is too continuous
+ * to tell (then the full separation is used, to be safe).
+ */
+export async function measureQuietGaps(audioPath, segments, durationSeconds, { minGapSeconds = 1, minTotalSeconds = 4, margin = 0.2, maxGaps = 60 } = {}) {
+  const lines = segments.filter((segment) => Number.isFinite(segment.start) && Number.isFinite(segment.end)).sort((first, second) => first.start - second.start);
+  const gaps = [];
+  let cursor = 0;
+  for (const line of lines) {
+    if (line.start - cursor >= minGapSeconds) gaps.push([cursor + margin, line.start - margin]);
+    cursor = Math.max(cursor, line.end);
+  }
+  if (durationSeconds - cursor >= minGapSeconds) gaps.push([cursor + margin, durationSeconds - margin]);
+  const chosen = gaps.sort((first, second) => (second[1] - second[0]) - (first[1] - first[0])).slice(0, maxGaps);
+  const seconds = chosen.reduce((sum, [from, to]) => sum + (to - from), 0);
+  if (seconds < minTotalSeconds) return null;
+  const select = chosen.map(([from, to]) => `between(t,${from.toFixed(2)},${to.toFixed(2)})`).join("+");
+  const { stderr } = await runCapture("ffmpeg", ["-v", "info", "-i", audioPath, "-af", `aselect='${select}',volumedetect`, "-f", "null", "-"]);
+  const mean = stderr.match(/mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/i);
+  return mean ? { seconds: Math.round(seconds * 10) / 10, meanDb: Number(mean[1]) } : null;
+}
+
 /** Lays the dub over the background at the configured level; the output is exactly as long as the dub track. */
 export async function mixDubWithBackground(dubPath, backgroundPath, outputPath, volume = config.backgroundVolume) {
   await run("ffmpeg", [

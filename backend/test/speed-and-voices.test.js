@@ -314,3 +314,26 @@ test("an attempt that has lost its job stops at the next step, without failing i
 test("technical errors become readable, and the Spitch busy message tells people to press Retry", () => {
   assert.equal(friendlyError(new Error("Spitch translation (429): concurrency_limit_exceeded")).kind, "busy");
 });
+
+// ---------- listening to the gaps ----------
+
+test("the gaps between spoken lines tell us whether there is music to keep", async () => {
+  const { measureQuietGaps } = await import("../src/separation.js");
+  const speech = "sine=frequency=300:duration=10,volume='if(between(t,0.2,2)+between(t,3,5),1,0)':eval=frame";
+  const lines = [{ start: 0.2, end: 2 }, { start: 3, end: 5 }];
+  const quiet = join(dataDirectory, "gaps-quiet.wav");
+  await run("ffmpeg", ["-y", "-f", "lavfi", "-i", speech, "-ar", "16000", "-ac", "1", quiet]);
+  const bed = join(dataDirectory, "gaps-bed.wav");
+  await run("ffmpeg", ["-y", "-f", "lavfi", "-i", speech, "-f", "lavfi", "-i", "anoisesrc=d=10:c=pink:a=0.1", "-filter_complex", "[0][1]amix=inputs=2:duration=first:normalize=0", "-ar", "16000", "-ac", "1", bed]);
+
+  const silent = await measureQuietGaps(quiet, lines, 10);
+  assert.ok(silent.seconds > 4, "there was enough silence to judge");
+  assert.ok(silent.meanDb <= -60, `almost no sound between the lines (${silent.meanDb} dB)`);
+  const music = await measureQuietGaps(bed, lines, 10);
+  assert.ok(music.meanDb > -40, `a steady sound under the speech is heard in the gaps (${music.meanDb} dB)`);
+  assert.ok(music.meanDb > silent.meanDb + 20);
+
+  // Nonstop speech leaves no gaps to listen to: the answer is "can't tell", which keeps the full separation.
+  assert.equal(await measureQuietGaps(quiet, [{ start: 0, end: 4.8 }, { start: 5, end: 9.9 }], 10), null);
+  assert.equal(await measureQuietGaps(quiet, [], 2), null, "a clip too short to judge");
+});

@@ -34,6 +34,7 @@ export default function JobStatusPage() {
   const [retryKey, setRetryKey] = useState(0);
   const sawTranscriptRef = useRef(false);
   const lastAttemptRef = useRef(0);
+  const lastStepAtRef = useRef<number | null>(null);
 
   const [music, setMusic] = useState<WaitingMusicSettings | undefined>(undefined);
 
@@ -63,7 +64,12 @@ export default function JobStatusPage() {
       if (updated.current_step !== lastStepRef.current && updated.status !== "failed") {
         const firstLook = lastStepRef.current === null;
         lastStepRef.current = updated.current_step;
-        push({ text: firstLook ? `Connected. ${STEP_MESSAGES[updated.current_step] || "Checking status."}` : STEP_MESSAGES[updated.current_step] || updated.current_step, tone: updated.current_step === "done" ? "success" : undefined });
+        // How long the step before this one took (measured here, so it's approximate), to show where the time goes.
+        const now = Date.now();
+        const took = lastStepAtRef.current ? Math.round((now - lastStepAtRef.current) / 1000) : 0;
+        lastStepAtRef.current = now;
+        const timing = !firstLook && took >= 5 ? ` (previous step took ${clock(took)})` : "";
+        push({ text: firstLook ? `Connected. ${STEP_MESSAGES[updated.current_step] || "Checking status."}` : `${STEP_MESSAGES[updated.current_step] || updated.current_step}${timing}`, tone: updated.current_step === "done" ? "success" : undefined });
       }
       if (!sawTranscriptRef.current && updated.has_transcript) {
         sawTranscriptRef.current = true;
@@ -74,7 +80,7 @@ export default function JobStatusPage() {
         lastStepRef.current = "failed";
         push({ text: updated.error_message || "Processing stopped with an error.", tone: "error" });
       }
-      if (updated.status === "done") {
+      if (updated.status === "done" || updated.extras_pending) {
         active = false;
         controller.abort();
         setTimeout(() => router.replace(`/result/${jobId}`), 1200);

@@ -186,6 +186,8 @@ export async function jobOutput(job, { detail = true } = {}) {
     minutes_charged: options.charge?.minutes ?? null,
     clips_pending: options.task === "clips",
     captions_pending: options.task === "captions",
+    // The dubbed video is ready and downloadable; captioned/resized copies are still being made behind it.
+    extras_pending: Boolean(options.extras_running) && job.status === "processing",
     caption_style: options.caption_style || null,
     youtube_languages: Array.isArray(options.youtube_languages) ? options.youtube_languages : [],
     human_reviewed_at: options.human_reviewed_at || null,
