@@ -23,3 +23,4 @@ coverage/
 backend/.dev-dub/
 backend/scripts/dev/pretrained_ecapa/
 "video dub/"
+processed_videos/
