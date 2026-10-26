@@ -37,10 +37,12 @@ export function useSpitchTranslation(language) {
   return config.nigerianTranslationEngine === "spitch" || config.nigerianTranslationEngine === "auto";
 }
 
-/** The voice for a speaker: the creator's pick for the main speaker, then alternating men's and women's voices. */
-export function spitchVoiceFor(language, rank = 0, preferred = null) {
-  const voices = SPITCH_VOICES[language] || [];
-  if (!voices.length) return null;
+/** The voice for a speaker: matched to the speaker's real gender (male or female). */
+export function spitchVoiceFor(language, rank = 0, preferred = null, gender = null) {
+  const allVoices = SPITCH_VOICES[language] || [];
+  if (!allVoices.length) return null;
+  const filtered = gender ? allVoices.filter((v) => v.gender === gender) : [];
+  const voices = filtered.length ? filtered : allVoices;
   if (preferred && voices.some((voice) => voice.id === preferred)) {
     if (rank === 0) return preferred;
     const others = voices.filter((voice) => voice.id !== preferred);

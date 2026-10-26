@@ -5,6 +5,7 @@ import { join } from "node:path";
 import OpenAI from "openai";
 import { config } from "./config.js";
 import { recordCost } from "./costs.js";
+import { detectSpeakerGenders } from "./gender.js";
 import { getLanguage } from "./languages.js";
 import { logger } from "./logger.js";
 import { runCapture } from "./media.js";
@@ -16,8 +17,15 @@ const TRACK_SAMPLE_RATE = 24000;
 const MAX_SEGMENT_SPEEDUP = 1.5;
 const MAX_TOTAL_SPEEDUP = 2.5;
 const SPEAKER_SAMPLE_SECONDS = 150;
-const MIN_CLONE_SECONDS = 4.7; // ElevenLabs requires at least 4.6 seconds of audio to clone
-const OPENAI_VOICES = ["alloy", "onyx", "nova", "echo", "shimmer", "fable"];
+const MIN_CLONE_SECONDS = 1.0; // Any speaker with >= 1s of speech can be cloned using loop-padding
+
+const ELEVENLABS_MALE_VOICES = ["TX3LPaxmHKxFdv7VOQHJ", "onwK4e9ZLuTAKqWW03F9", "VR6AewLTigWG4xSOukaG", "pNInz6obpgDQGcFmaJgB", "ErXwobaYiN019PkySvjV"];
+const ELEVENLABS_FEMALE_VOICES = ["EXAVITQu4vr4xnSDxMaL", "XB0fDUnXU5powFXDhCwa", "21m00Tcm4TlvDq8ikWAM", "AZnzlk1XvdvUeBnXmlld", "MF3mGyEYCl7XYWbV9V6O"];
+
+const OPENAI_MALE_VOICES = ["onyx", "echo", "fable"];
+const OPENAI_FEMALE_VOICES = ["alloy", "nova", "shimmer"];
+
+export const OPENAI_VOICES = ["alloy", "onyx", "nova", "echo", "shimmer", "fable"];
 
 let modelLanguagesCache = null;
 
@@ -97,10 +105,25 @@ export async function createSpeakerSample(sourceAudioPath, segments, outputPath)
     if (total >= SPEAKER_SAMPLE_SECONDS) break;
   }
   if (!picked.length) throw new Error("No speech intervals were found to create a voice sample.");
-  const filters = picked.map((segment, index) => (
+
+  // ElevenLabs requires at least 4.6 seconds of audio for instant voice cloning.
+  // If the speaker spoke briefly (e.g. 1s - 4.5s), loop their segments so the sample reaches
+  // at least 6 seconds of their real voice, preserving 100% of their vocal timbre and identity.
+  const sampleClips = [...picked];
+  if (total < 5.5 && total >= 0.8) {
+    while (total < 6.0) {
+      for (const segment of picked) {
+        sampleClips.push(segment);
+        total += segment.end - segment.start;
+        if (total >= 6.0) break;
+      }
+    }
+  }
+
+  const filters = sampleClips.map((segment, index) => (
     `[0:a]atrim=start=${Math.max(0, segment.start)}:end=${segment.end},asetpts=PTS-STARTPTS,highpass=f=70,afftdn=nf=-25[a${index}]`
   ));
-  filters.push(`${picked.map((_, index) => `[a${index}]`).join("")}concat=n=${picked.length}:v=0:a=1[out]`);
+  filters.push(`${sampleClips.map((_, index) => `[a${index}]`).join("")}concat=n=${sampleClips.length}:v=0:a=1[out]`);
   const scriptPath = `${outputPath}.filter.txt`;
   await writeFile(scriptPath, filters.join(";\n"));
   const encode = ["-map", "[out]", "-ac", "1", "-ar", "44100", "-c:a", "libmp3lame", "-b:a", "192k", outputPath];
@@ -219,10 +242,17 @@ export function rankSpeakers(segments) {
   return [...talk.entries()].sort((first, second) => second[1] - first[1]).map(([speaker, seconds]) => ({ speaker, seconds }));
 }
 
-function stockVoiceFor(rank) {
-  if (rank === 0) return config.elevenlabsFallbackVoiceId;
-  const others = config.elevenlabsStockVoices.filter((voice) => voice !== config.elevenlabsFallbackVoiceId);
-  return others.length ? others[(rank - 1) % others.length] : config.elevenlabsFallbackVoiceId;
+function stockVoiceFor(rank, gender = "male") {
+  if (config.elevenlabsFallbackVoiceId && config.elevenlabsFallbackVoiceId !== "EXAVITQu4vr4xnSDxMaL") {
+    return config.elevenlabsFallbackVoiceId;
+  }
+  const pool = gender === "female" ? ELEVENLABS_FEMALE_VOICES : ELEVENLABS_MALE_VOICES;
+  return pool[rank % pool.length];
+}
+
+function openaiVoiceFor(rank, gender = "male") {
+  const pool = gender === "female" ? OPENAI_FEMALE_VOICES : OPENAI_MALE_VOICES;
+  return pool[rank % pool.length];
 }
 
 export function clipCacheKey(parts) {
@@ -276,13 +306,17 @@ export async function dubSegments({
   const ranked = rankSpeakers(sourceSegments.length ? sourceSegments : speakable);
   const rankOf = new Map(ranked.map((item, index) => [item.speaker, index]));
 
+  // Accurately determine the real gender of every speaker so men get male voices and women get female voices.
+  const speakerGenders = await detectSpeakerGenders(sourceAudioPath, sourceSegments.length ? sourceSegments : speakable).catch(() => new Map());
+
   const voiceKeyFor = (speaker) => {
     const rank = rankOf.get(speaker) ?? 0;
-    if (provider === "spitch") return `spitch:${spitchVoiceFor(targetLanguage, rank, preferredVoice)}`;
-    if (provider === "openai") return `openai:${OPENAI_VOICES[rank % OPENAI_VOICES.length]}`;
+    const gender = speakerGenders.get(speaker) || "male";
+    if (provider === "spitch") return `spitch:${spitchVoiceFor(targetLanguage, rank, preferredVoice, gender)}`;
+    if (provider === "openai") return `openai:${openaiVoiceFor(rank, gender)}`;
     if (savedVoiceId && rank === 0) return `saved:${savedVoiceId}`;
     if (voiceClone) return `clone:${voiceScope}:${speaker}`;
-    return `stock:${stockVoiceFor(rank)}`;
+    return `stock:${stockVoiceFor(rank, gender)}`;
   };
   const keyFor = (segment) => clipCacheKey([provider, config.elevenlabsModel, voiceKeyFor(speakerOf(segment)), targetLanguage, segment.text.trim()]);
 
@@ -315,7 +349,8 @@ export async function dubSegments({
     let cloningBlocked = false;
     for (const { speaker, seconds } of ranked) {
       const rank = rankOf.get(speaker);
-      let voiceId = stockVoiceFor(rank);
+      const gender = speakerGenders.get(speaker) || "male";
+      let voiceId = stockVoiceFor(rank, gender);
       let cloned = false;
       const needsClips = pending.some((segment) => speakerOf(segment) === speaker);
       if (savedVoiceId && rank === 0) {
@@ -338,17 +373,19 @@ export async function dubSegments({
         }
       }
       voices.set(speaker, voiceId);
-      speakerResults.push({ speaker, seconds: Math.round(seconds * 10) / 10, voice: savedVoiceId && rank === 0 ? "saved" : (cloned || (voiceClone && !needsClips)) ? "clone" : "standard" });
+      speakerResults.push({ speaker, gender, seconds: Math.round(seconds * 10) / 10, voice: savedVoiceId && rank === 0 ? "saved" : (cloned || (voiceClone && !needsClips)) ? "clone" : "standard" });
     }
   } else if (provider === "spitch") {
     for (const { speaker, seconds } of ranked) {
-      voices.set(speaker, spitchVoiceFor(targetLanguage, rankOf.get(speaker), preferredVoice));
-      speakerResults.push({ speaker, seconds: Math.round(seconds * 10) / 10, voice: "native" });
+      const gender = speakerGenders.get(speaker) || "male";
+      voices.set(speaker, spitchVoiceFor(targetLanguage, rankOf.get(speaker), preferredVoice, gender));
+      speakerResults.push({ speaker, gender, seconds: Math.round(seconds * 10) / 10, voice: "native" });
     }
   } else {
     for (const { speaker, seconds } of ranked) {
-      voices.set(speaker, OPENAI_VOICES[rankOf.get(speaker) % OPENAI_VOICES.length]);
-      speakerResults.push({ speaker, seconds: Math.round(seconds * 10) / 10, voice: "standard" });
+      const gender = speakerGenders.get(speaker) || "male";
+      voices.set(speaker, openaiVoiceFor(rankOf.get(speaker), gender));
+      speakerResults.push({ speaker, gender, seconds: Math.round(seconds * 10) / 10, voice: "standard" });
     }
   }
 
@@ -361,7 +398,8 @@ export async function dubSegments({
     // Voice lines are made several at a time; each engine has its own limit (Spitch and ElevenLabs refuse requests past it).
     const concurrency = provider === "spitch" ? config.spitchConcurrency : provider === "elevenlabs" ? config.elevenlabsConcurrency : 4;
     const fresh = await mapWithConcurrency(pending, Math.max(1, concurrency), async (segment) => {
-      const voice = voices.get(speakerOf(segment)) || (provider === "openai" ? "alloy" : provider === "spitch" ? spitchVoiceFor(targetLanguage, 0, preferredVoice) : config.elevenlabsFallbackVoiceId);
+      const gender = speakerGenders.get(speakerOf(segment)) || "male";
+      const voice = voices.get(speakerOf(segment)) || (provider === "openai" ? openaiVoiceFor(0, gender) : provider === "spitch" ? spitchVoiceFor(targetLanguage, 0, preferredVoice, gender) : stockVoiceFor(0, gender));
       const audio = provider === "spitch"
         ? await synthesizeWithSpitch(segment.text.trim(), voice, targetLanguage)
         : provider === "elevenlabs"
@@ -389,7 +427,8 @@ export async function dubSegments({
       await mapWithConcurrency(redo, Math.max(1, concurrency), async (segment) => {
         const oldKey = keyFor(segment);
         segment.text = rewrites.get(segment.index);
-        const voice = voices.get(speakerOf(segment)) || (provider === "openai" ? "alloy" : provider === "spitch" ? spitchVoiceFor(targetLanguage, 0, preferredVoice) : config.elevenlabsFallbackVoiceId);
+        const gender = speakerGenders.get(speakerOf(segment)) || "male";
+        const voice = voices.get(speakerOf(segment)) || (provider === "openai" ? openaiVoiceFor(0, gender) : provider === "spitch" ? spitchVoiceFor(targetLanguage, 0, preferredVoice, gender) : stockVoiceFor(0, gender));
         const audio = provider === "spitch"
           ? await synthesizeWithSpitch(segment.text, voice, targetLanguage)
           : provider === "elevenlabs"
