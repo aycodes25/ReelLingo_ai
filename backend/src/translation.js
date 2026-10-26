@@ -170,9 +170,9 @@ async function translateWithOpenAI(segments, targetLanguage, requestCompletion, 
         messages: [
           {
             role: "system",
-            content: `Translate every segment from ${source} into ${base} ${target}. Translate every word faithfully, keep names as spoken, and never merge, split, skip or summarize segments.${extra} Return JSON {"segments":[{"index":0,"text":"..."}]} with exactly one entry per input segment, preserving each index.${rules}`,
+            content: `Translate every segment from ${source} into natural spoken ${base} ${target}. CRITICAL DUBBING REQUIREMENT: These lines are for professional video dubbing. Each translation must match the spoken duration and cadence of the original actor (see targetSeconds). Keep translations concise, natural and punchy—never overly verbose. Keep names and places as spoken, and never merge, split, skip or summarize segments.${extra} Return JSON {"segments":[{"index":0,"text":"..."}]} with exactly one entry per input segment, preserving each index.${rules}`,
           },
-          { role: "user", content: JSON.stringify(batch.map((item, index) => ({ index, text: item.text }))) },
+          { role: "user", content: JSON.stringify(batch.map((item, index) => ({ index, text: item.text, targetSeconds: Math.max(0.4, Math.round(((item.end - item.start) || 1) * 10) / 10) }))) },
         ],
       }, batch.length, { retryDelayMs, label: "Translation" });
 

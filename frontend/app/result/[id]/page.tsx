@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { QualityReport } from "@/components/QualityReport";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -288,6 +289,7 @@ export default function ResultPage() {
       {job.extras_pending && <div role="status" className="alert alert-info" style={{ marginBottom: 24 }}><LoaderCircle size={16} className="spin" /><span><strong>Your dubbed video is ready.</strong> We&apos;re still making the extra versions you asked for (subtitled video, other sizes). They&apos;ll appear here when they&apos;re done: no need to wait.</span></div>}
       {job.captions_pending && <div role="status" className="alert alert-info" style={{ marginBottom: 24 }}><LoaderCircle size={16} className="spin" /><span>Adding the subtitles to your video… this usually takes a minute or two.</span></div>}
       {job.clips_pending && <div role="status" className="alert alert-info" style={{ marginBottom: 24 }}><LoaderCircle size={16} className="spin" /><span>Making your short clips… this usually takes a few minutes.</span></div>}
+      {job.quality_report && !subtitlesOnly && <QualityReport report={job.quality_report} />}
       {job.batch && job.batch.length > 1 && (
         <div className="batch-strip" aria-label="Other languages from this upload">
           <span>Also from this upload:</span>

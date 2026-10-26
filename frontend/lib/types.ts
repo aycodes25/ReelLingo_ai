@@ -78,6 +78,8 @@ export interface Job {
   original_filename: string | null;
   source_url: string | null;
   processing_note: string | null;
+  /** Automatic checks made on the project (proofreading, listening to the dub); null for older projects. */
+  quality_report?: QualityReport | null;
   created_at: string | null;
   completed_at: string | null;
   demo_mode: boolean;
@@ -437,3 +439,10 @@ export interface ReviewerHome {
   earnings: { owed_ngn: number; paid_ngn: number; reviews: number; rate_ngn_per_minute: number };
 }
 
+
+export interface QualityReport {
+  speakers?: { count: number; people: { id: string; seconds: number }[] };
+  transcript?: { second_opinion: boolean; doubtful: number; corrected: number };
+  translation?: { checked: number; errors: number; major: number; minor: number; fixed: number; issues: { line: number; severity: "major" | "minor"; problem: string; before: string; after: string | null; fixed: boolean }[] };
+  dub?: { checked: boolean; language_ok?: boolean; lines?: number; matched_percent?: number | null; mismatched?: { line: number; intended: string; heard: string; similarity: number }[]; mismatched_count?: number; rushed: number; fastest?: number | null; average_speed?: number | null };
+}

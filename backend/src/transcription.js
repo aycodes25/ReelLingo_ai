@@ -5,6 +5,7 @@ import OpenAI from "openai";
 import { config } from "./config.js";
 import { recordCost } from "./costs.js";
 import { getLanguage, languages } from "./languages.js";
+import { logger } from "./logger.js";
 import { getMediaInfo, run, runCapture } from "./media.js";
 import { responseError, withRetries } from "./retry.js";
 
@@ -78,10 +79,65 @@ export function languageCodeFromName(name) {
   if (!name) return null;
   const normalized = name.toLowerCase().trim();
   const aliases = {
-    chinese: "zh", mandarin: "zh", farsi: "fa", tagalog: "fil", pidgin: "pcm",
-    "nigerian pidgin": "pcm", fula: "ff", fulfulde: "ff", kanuri: "kr",
-    yor: "yo", hau: "ha", ibo: "ig", swa: "sw", amh: "am", eng: "en", fra: "fr", por: "pt", spa: "es", zul: "zu", xho: "xh",
-    som: "so", orm: "om", kin: "rw", lin: "ln", wol: "wo", sna: "sn", afr: "af", ara: "ar", twi: "tw", ewe: "ee",
+    // Chinese
+    chinese: "zh", mandarin: "zh", cmn: "zh", zho: "zh", chi: "zh",
+    // Korean
+    korean: "ko", kor: "ko",
+    // Bengali & South Asian
+    bengali: "bn", ben: "bn", bangla: "bn",
+    hindi: "hi", hin: "hi",
+    tamil: "ta", tam: "ta",
+    telugu: "te", tel: "te",
+    urdu: "ur", urd: "ur",
+    // Southeast Asian
+    tagalog: "fil", filipino: "fil", fil: "fil", tgl: "fil",
+    vietnamese: "vi", vie: "vi",
+    thai: "th", tha: "th",
+    indonesian: "id", ind: "id",
+    malay: "ms", msa: "ms", may: "ms",
+    // East Asian
+    japanese: "ja", jpn: "ja",
+    // European
+    english: "en", eng: "en",
+    french: "fr", fra: "fr", fre: "fr",
+    spanish: "es", spa: "es",
+    portuguese: "pt", por: "pt",
+    german: "de", deu: "de", ger: "de",
+    italian: "it", ita: "it",
+    dutch: "nl", nld: "nl", dut: "nl",
+    russian: "ru", rus: "ru",
+    polish: "pl", pol: "pl",
+    ukrainian: "uk", ukr: "uk",
+    turkish: "tr", tur: "tr",
+    greek: "el", ell: "el", gre: "el",
+    swedish: "sv", swe: "sv",
+    danish: "da", dan: "da",
+    norwegian: "no", nor: "no",
+    finnish: "fi", fin: "fi",
+    // Middle Eastern
+    arabic: "ar", ara: "ar",
+    farsi: "fa", persian: "fa", fas: "fa", per: "fa",
+    hebrew: "he", heb: "he",
+    // African & Nigerian
+    pidgin: "pcm", "nigerian pidgin": "pcm",
+    yoruba: "yo", yor: "yo",
+    hausa: "ha", hau: "ha",
+    igbo: "ig", ibo: "ig",
+    fula: "ff", fulfulde: "ff", ful: "ff", fuv: "ff",
+    kanuri: "kr", kau: "kr",
+    tiv: "tiv", edo: "bin", bin: "bin",
+    swahili: "sw", swa: "sw",
+    amharic: "am", amh: "am",
+    oromo: "om", orm: "om",
+    somali: "so", som: "so",
+    zulu: "zu", zul: "zu",
+    xhosa: "xh", xho: "xh",
+    afrikaans: "af", afr: "af",
+    shona: "sn", sna: "sn",
+    kinyarwanda: "rw", kin: "rw",
+    lingala: "ln", lin: "ln",
+    wolof: "wo", wol: "wo",
+    twi: "tw", ewe: "ee",
   };
   if (aliases[normalized]) return aliases[normalized];
   if (getLanguage(normalized)) return normalized;
@@ -155,12 +211,12 @@ async function transcribeWithWhisper(audioPath, chunksDirectory, sourceLanguage,
   return { ...result, speakers: [] };
 }
 
-const SCRIBE_MAX_GAP_SECONDS = 1.2;
-const SCRIBE_MAX_SEGMENT_SECONDS = 12;
+const SCRIBE_MAX_GAP_SECONDS = 0.9;
+const SCRIBE_MAX_SEGMENT_SECONDS = 10;
 
 /** Groups Scribe's word timings into sentence-sized segments that never mix two speakers. */
 export function wordsToSegments(words, languageCode) {
-  const segments = [];
+  const rawSegments = [];
   let current = null;
   for (const word of words) {
     if (word.type === "audio_event") continue;
@@ -171,35 +227,69 @@ export function wordsToSegments(words, languageCode) {
     }
     const start = Number(word.start);
     const end = Number(word.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) continue;
     const speaker = word.speaker_id || "speaker_0";
     const breakHere = !current
       || current.speaker !== speaker
       || start - current.end > SCRIBE_MAX_GAP_SECONDS
-      || (end - current.start > SCRIBE_MAX_SEGMENT_SECONDS && /[.!?…]$/.test(current.text.trim()))
-      || end - current.start > SCRIBE_MAX_SEGMENT_SECONDS * 2;
+      || (end - current.start > 2.5 && /[.!?…]$/.test(current.text.trim()))
+      || end - current.start > SCRIBE_MAX_SEGMENT_SECONDS;
     if (breakHere) {
-      if (current) segments.push(current);
-      current = { start, end, text, speaker, language: languageCode };
+      if (current) rawSegments.push(current);
+      current = { start, end: Math.max(end, start + 0.05), text, speaker, language: languageCode };
     } else {
       current.text += text;
-      current.end = end;
+      current.end = Math.max(end, current.end);
     }
   }
-  if (current) segments.push(current);
-  return segments.map((segment) => ({ ...segment, text: segment.text.replace(/\s+/g, " ").trim() })).filter((segment) => segment.text);
+  if (current) rawSegments.push(current);
+
+  const clean = rawSegments
+    .map((s) => ({ ...s, text: s.text.replace(/\s+/g, " ").trim() }))
+    .filter((s) => s.text && Number.isFinite(s.start) && Number.isFinite(s.end));
+
+  // Merge broken fragments:
+  // Skip 0-duration crosstalk glitches (<0.12s), and merge adjacent segments from the same speaker
+  // across short breath pauses (<0.8s) when not separated by terminal punctuation.
+  const merged = [];
+  for (let i = 0; i < clean.length; i++) {
+    const seg = clean[i];
+    const prev = merged[merged.length - 1];
+
+    if (seg.end - seg.start < 0.12 && /^(yeah|yeh|uh|um|mm|mhm|ah|oh)?[.,!?-]*$/i.test(seg.text)) {
+      continue;
+    }
+
+    if (prev && prev.speaker === seg.speaker && seg.start - prev.end < 0.8 && !/[.!?…]$/.test(prev.text)) {
+      prev.text = `${prev.text} ${seg.text}`.trim();
+      prev.end = Math.max(prev.end, seg.end);
+    } else {
+      if (seg.end - seg.start < 0.25) {
+        seg.end = seg.start + 0.25;
+      }
+      merged.push(seg);
+    }
+  }
+
+  return merged;
 }
 
 /** ElevenLabs Scribe: covers many African languages and labels who is speaking. */
-async function transcribeWithScribe(audioPath, workdir, sourceLanguage, durationSeconds, { diarize = true } = {}) {
+async function callScribe(audioPath, workdir, sourceLanguage, durationSeconds, { diarize = true } = {}) {
   if (!config.elevenlabsApiKey) throw new Error("ELEVENLABS_API_KEY is required for multi-speaker transcription.");
   const compressed = join(workdir, "scribe-input.mp3");
   await run("ffmpeg", ["-y", "-i", audioPath, "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "64k", compressed]);
   const form = new FormData();
   form.append("model_id", config.elevenlabsSttModel);
   form.append("diarize", diarize ? "true" : "false");
+  if (diarize) {
+    form.append("diarization_threshold", "0.24");
+  }
   form.append("tag_audio_events", "false");
   form.append("timestamps_granularity", "word");
-  if (sourceLanguage && sourceLanguage !== "auto") form.append("language_code", sourceLanguage);
+  // Scribe wants a real language code. Nigerian Pidgin isn't one it knows (it is transcribed as English, keeping the Pidgin words),
+  // so for Pidgin and auto-detect it is left to find the language itself.
+  if (sourceLanguage && !["auto", "pcm"].includes(sourceLanguage)) form.append("language_code", sourceLanguage);
   form.append("file", new Blob([await readFile(compressed)], { type: "audio/mpeg" }), "audio.mp3");
   const data = await withRetries(async () => {
     const response = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
@@ -211,6 +301,32 @@ async function transcribeWithScribe(audioPath, workdir, sourceLanguage, duration
     return response.json();
   }, { label: "ElevenLabs transcription" });
   await recordCost("elevenlabs", "transcription", durationSeconds / 3600, "hours", (durationSeconds / 3600) * config.costs.scribePerHour);
+  return data;
+}
+
+/** Listens to audio (used to check a finished dub): the words with their times, and the language that was heard. */
+export async function listenToAudio(audioPath, workdir, language, durationSeconds) {
+  let data;
+  try {
+    data = await callScribe(audioPath, workdir, language, durationSeconds, { diarize: false });
+  } catch (error) {
+    // Not every language code is accepted for listening; let it work the language out itself rather than skipping the check.
+    if (!language || language === "auto") throw error;
+    data = await callScribe(audioPath, workdir, "auto", durationSeconds, { diarize: false });
+  }
+  return { words: data.words || [], language: languageCodeFromName(data.language_code) || null };
+}
+
+/** A second opinion on the transcript: Whisper hears the same audio independently. Returns segments, or null if it can't run. */
+export async function secondOpinionTranscript(audioPath, workdir, sourceLanguage) {
+  if (!ai) return null;
+  const chunksDirectory = join(workdir, "second-opinion-chunks");
+  await mkdir(chunksDirectory, { recursive: true });
+  return (await transcribeWithWhisper(audioPath, chunksDirectory, sourceLanguage, "")).segments;
+}
+
+async function transcribeWithScribe(audioPath, workdir, sourceLanguage, durationSeconds, { diarize = true } = {}) {
+  const data = await callScribe(audioPath, workdir, sourceLanguage, durationSeconds, { diarize });
   const code = languageCodeFromName(data.language_code) || (sourceLanguage !== "auto" ? sourceLanguage : "und");
   // Speaker changes still end a line, but without "multiple speakers" every line gets the same voice.
   const segments = wordsToSegments(data.words || [], code).map((segment) => (diarize ? segment : { ...segment, speaker: "speaker_0" }));
@@ -228,13 +344,16 @@ export async function transcribe(audioPath, workdir, sourceLanguage, { multiSpea
   await mkdir(chunksDirectory, { recursive: true });
   // Whisper struggles with Yoruba, Hausa, Igbo and Pidgin; ElevenLabs Scribe handles them far better.
   const nigerianSource = ["yo", "ha", "ig", "pcm"].includes(sourceLanguage) && config.africanTranscriptionEngine === "elevenlabs";
-  const useScribe = config.elevenlabsApiKey && (multiSpeaker || nigerianSource || config.transcriptionProvider === "elevenlabs");
+  // Scribe gives exact word timings and tells speakers apart, which dubbing needs (Whisper rounds times to whole seconds).
+  const diarize = multiSpeaker || config.autoSpeakers;
+  const useScribe = config.elevenlabsApiKey && (diarize || nigerianSource || config.transcriptionProvider === "elevenlabs");
   if (useScribe) {
     try {
-      return await transcribeWithScribe(audioPath, workdir, sourceLanguage, durationSeconds, { diarize: multiSpeaker });
+      return await transcribeWithScribe(audioPath, workdir, sourceLanguage, durationSeconds, { diarize });
     } catch (error) {
       if (!ai) throw error;
-      onNote?.(`Speaker separation was unavailable (${error.message.slice(0, 160)}), so every line uses one voice.`);
+      logger.warn({ err: error }, "Scribe transcription failed, using Whisper");
+      onNote?.(`Speaker detection was unavailable (${error.message.slice(0, 160)}), so every line uses one voice and the timing is less exact.`);
     }
   } else if (multiSpeaker) {
     onNote?.("Multi-speaker dubbing needs ELEVENLABS_API_KEY; every line uses one voice.");

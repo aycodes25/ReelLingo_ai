@@ -8,7 +8,9 @@ import { config } from "./config.js";
 import { runWithJob } from "./costs.js";
 import { getJob, updateJob } from "./database.js";
 import { one, query } from "./db.js";
-import { dubSegments } from "./dubbing.js";
+import { dubSegments, retimeToDub } from "./dubbing.js";
+import { fitLines, shortenLines } from "./fitlines.js";
+import { compareDub, reviewTranslation, speakerSummary } from "./quality.js";
 import { findInInbox } from "./inbox.js";
 import { importFromUrl } from "./importer.js";
 import { getLanguage } from "./languages.js";
@@ -24,12 +26,23 @@ import {
 import { openReviewTask } from "./reviews.js";
 import { measureQuietGaps, mixDubWithBackground, separateBackground } from "./separation.js";
 import { deleteFiles, downloadFile, fileExists, getSignedUrl, uploadBuffer, uploadFile } from "./storage.js";
-import { transcribe } from "./transcription.js";
+import { listenToAudio, secondOpinionTranscript, transcribe } from "./transcription.js";
 import { detectSegmentLanguages, generateMetadata, translate } from "./translation.js";
 
 export { splitAudioForTranscription, transcribeAudioChunks, whisperLanguageHint } from "./transcription.js";
 export { detectSegmentLanguages, translate } from "./translation.js";
 export { assertAudibleAudio, mergeAudioVideo } from "./render.js";
+
+const subtitlesOnly_ = (options) => options.mode === "subtitles";
+
+/** Adds to the project's quality report without disturbing anything else saved on the project. */
+async function saveQualityReport(jobId, patch) {
+  const latest = await getJob(jobId);
+  const report = { ...(latest.options_json?.quality_report || {}), ...patch };
+  await updateJob(jobId, { options_json: { ...latest.options_json, quality_report: report } });
+}
+
+const round2 = (value) => Math.round(Number(value) * 100) / 100;
 
 /** Thrown when a job pauses on purpose (waiting for the creator to review the translation). */
 class PausedForReview extends Error {}
@@ -193,8 +206,10 @@ export async function processJob(job, { localInputPath = null } = {}) {
     pendingSaves.push(saving);
     return path;
   };
+  const runStartedAt = Date.now();
   const step = (current_step, extra = {}) => {
     if (job.lease?.lost) throw new JobSuperseded();
+    logger.info({ jobId: job.id, step: current_step, seconds: Math.round((Date.now() - runStartedAt) / 1000) }, "Step started");
     return updateJob(job.id, { status: "processing", current_step, error_message: null, ...extra });
   };
   try {
@@ -287,11 +302,32 @@ export async function processJob(job, { localInputPath = null } = {}) {
       }
     }
 
+    // A second engine listens to the same audio while the translation is made, to catch words the first one got wrong.
+    const wantsReview = config.qualityCheck && !subtitlesOnly_(options) && !options.quality_report?.translation && job.source_language !== "pcm" && Boolean(speakers?.length);
+    const secondOpinion = wantsReview
+      ? secondOpinionTranscript(audioPath, workdir, job.source_language).catch((error) => { logger.warn({ err: error, jobId: job.id }, "Second transcript failed"); return null; })
+      : null;
     let translated = job.translated_segments_json;
     if (!translated?.length || translated.length !== transcript.length) {
       await step("translating");
       translated = await translate(transcript, job.target_language, undefined, { glossary, tone: options.tone || "natural", onNote: (note) => notes.push(note) });
       await updateJob(job.id, { translated_segments_json: translated });
+    }
+
+    if (config.qualityCheck && !options.quality_report?.translation) {
+      try {
+        const review = await reviewTranslation({
+          transcript, translated, alternate: await secondOpinion, sourceLanguage: job.source_language, targetLanguage: job.target_language, onNote: (note) => notes.push(note),
+        });
+        if (review.changed) {
+          transcript = review.transcript;
+          translated = review.translated;
+          await updateJob(job.id, { transcript_json: transcript, translated_segments_json: translated });
+        }
+        await saveQualityReport(job.id, { version: 1, at: new Date().toISOString(), speakers: speakerSummary(transcript), ...review.report });
+      } catch (error) {
+        logger.warn({ err: error, jobId: job.id }, "Quality review failed");
+      }
     }
 
     if (!job.metadata_json) {
@@ -320,6 +356,13 @@ export async function processJob(job, { localInputPath = null } = {}) {
     // The background track keeps being prepared while the voice is made (it is only needed for the final mix below).
     if (wantsBackground && !backgroundTask) backgroundTask = startBackground().finally(() => { backgroundSettled = true; });
 
+    // Lines too long to say in the time on screen are shortened now, so the voice doesn't have to rush them.
+    const fitted = await fitLines(translated, job.target_language, durationSeconds, { onNote: (note) => notes.push(note) });
+    if (fitted.shortened) {
+      translated = fitted.segments;
+      await updateJob(job.id, { translated_segments_json: translated });
+    }
+
     await step("dubbing");
     const dubbedAudioPath = join(workdir, "translated-audio.wav");
     const clipCache = storageClipCache(job, workdir);
@@ -336,7 +379,18 @@ export async function processJob(job, { localInputPath = null } = {}) {
       clipCache,
       voiceScope: `job${job.id}`,
       preferredVoice: options.nigerian_voice || null,
+      refit: config.fitLines ? (lines) => shortenLines(lines, job.target_language).catch(() => new Map()) : null,
     });
+    if (dubResult.revised?.length) {
+      translated = translated.map((segment, index) => dubResult.revised.find((line) => line.index === index) ? { ...segment, text: dubResult.revised.find((line) => line.index === index).text } : segment);
+      await updateJob(job.id, { translated_segments_json: translated });
+    }
+    // Where each line really landed in the dub (start, end, speed-up): subtitles and clips are timed from this, so they match what is heard.
+    if (dubResult.timeline?.length) {
+      const latest = await getJob(job.id);
+      job.options_json = { ...latest.options_json, dub_timeline: dubResult.timeline.map((line) => [line.index, round2(line.start), round2(line.end), round2(line.speed), round2(line.naturalSeconds)]) };
+      await updateJob(job.id, { options_json: job.options_json });
+    }
     for (const clip of dubResult.newClips) await uploadFile(`jobs/${job.id}/clips/${clip.key}.mp3`, clip.path, "audio/mpeg");
     const currentKeys = [...new Set(dubResult.keys.map((item) => item.key))];
     const staleKeys = [...clipCache.known].filter((key) => !currentKeys.includes(key));
@@ -349,6 +403,14 @@ export async function processJob(job, { localInputPath = null } = {}) {
       await updateJob(job.id, { voice_clone: dubResult.voiceCloned });
     }
     await assertAudibleAudio(dubbedAudioPath);
+    // Listen to the finished dub while the background and video are put together, and check it says what it should.
+    const dubCheck = config.qualityCheck && dubResult.timeline?.length
+      ? Promise.race([
+        listenToAudio(dubbedAudioPath, workdir, job.target_language, durationSeconds)
+          .then((heard) => compareDub({ words: heard.words, timeline: job.options_json.dub_timeline, translated, targetLanguage: job.target_language, heardLanguage: heard.language })),
+        new Promise((resolve) => setTimeout(() => resolve(null), 150_000)),
+      ]).catch((error) => { logger.warn({ err: error, jobId: job.id }, "Dub check failed"); return null; })
+      : null;
 
     let background = null;
     if (backgroundTask) {
@@ -383,9 +445,17 @@ export async function processJob(job, { localInputPath = null } = {}) {
     }
 
     await step("generating_subtitles");
-    const srtPath = await uploadBuffer(`${prefix}/subtitles.srt`, Buffer.from(generateSrt(translated)), "text/plain; charset=utf-8");
+    // Subtitles follow the dubbed voice (where each line really starts and ends), not the original speech timing.
+    const subtitleLines = retimeToDub(translated, job.options_json?.dub_timeline);
+    const srtPath = await uploadBuffer(`${prefix}/subtitles.srt`, Buffer.from(generateSrt(subtitleLines)), "text/plain; charset=utf-8");
     outputs.push({ kind: "subtitles", format: "srt", label: "Subtitles (SRT)", path: srtPath });
-    outputs.push({ kind: "subtitles", format: "vtt", label: "Subtitles (VTT)", path: await uploadBuffer(`${prefix}/subtitles.vtt`, Buffer.from(generateVtt(translated)), "text/vtt; charset=utf-8") });
+    outputs.push({ kind: "subtitles", format: "vtt", label: "Subtitles (VTT)", path: await uploadBuffer(`${prefix}/subtitles.vtt`, Buffer.from(generateVtt(subtitleLines)), "text/vtt; charset=utf-8") });
+
+    if (dubCheck) {
+      const dub = await dubCheck;
+      if (dub) await saveQualityReport(job.id, { dub });
+      else await saveQualityReport(job.id, { dub: { checked: false } });
+    }
 
     // Captioned and resized copies, and lip-sync, take a while. The dubbed video itself is ready now, so show it
     // and keep making the extras behind it (a failure there only costs the extras, not the dub).
@@ -418,7 +488,7 @@ export async function processJob(job, { localInputPath = null } = {}) {
       await step("rendering");
       const size = displaySize(info);
       if (options.captions) {
-        const assPath = await writeAss(join(workdir, "captions.ass"), translated, { ...size, style: options.captions });
+        const assPath = await writeAss(join(workdir, "captions.ass"), subtitleLines, { ...size, style: options.captions });
         outputs.push({ kind: "subtitles", format: "ass", label: "Styled subtitles (ASS)", path: await uploadFile(`${prefix}/subtitles.ass`, assPath, "text/plain; charset=utf-8") });
         const captioned = join(workdir, "captioned.mp4");
         await mergeAudioVideo(inputPath, finalAudioPath, captioned, { watermark, assPath });
@@ -428,7 +498,7 @@ export async function processJob(job, { localInputPath = null } = {}) {
         if (!ASPECTS[aspect]) continue;
         const target = aspectSize(size, aspect);
         const slug = aspect.replace(":", "x");
-        const assPath = options.captions ? await writeAss(join(workdir, `captions-${slug}.ass`), translated, { ...target, style: options.captions }) : null;
+        const assPath = options.captions ? await writeAss(join(workdir, `captions-${slug}.ass`), subtitleLines, { ...target, style: options.captions }) : null;
         const variant = join(workdir, `format-${slug}.mp4`);
         await mergeAudioVideo(inputPath, finalAudioPath, variant, { watermark, assPath, aspect });
         // Saving this one runs while the next one is being drawn.
@@ -489,7 +559,9 @@ export async function processJob(job, { localInputPath = null } = {}) {
     stopBackground.abort();
     await backgroundTask?.catch(() => undefined);
     await Promise.allSettled(pendingSaves);
-    await rm(workdir, { recursive: true, force: true });
+    // Developers can keep the temporary folder to listen to the separated tracks and the dub (scripts/dev/dub-local.mjs).
+    if (process.env.REELLINGO_KEEP_WORKDIR) logger.info({ jobId: job.id, workdir }, "Keeping the work folder");
+    else await rm(workdir, { recursive: true, force: true });
   }
 }
 

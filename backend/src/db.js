@@ -7,7 +7,7 @@ import { config } from "./config.js";
 
 const { Pool } = pg;
 const require = createRequire(import.meta.url);
-export const isPostgres = /^postgres(?:ql)?:/i.test(config.databaseUrl);
+export let isPostgres = /^postgres(?:ql)?:/i.test(config.databaseUrl);
 let sqlite;
 let pool;
 let databaseFile;
@@ -394,23 +394,35 @@ async function migrate() {
 
 export async function initializeDatabase() {
   if (isPostgres) {
-    pool = new Pool({ connectionString: config.databaseUrl, application_name: "reellingo-api", ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false } : undefined });
-  } else {
+    try {
+      pool = new Pool({
+        connectionString: config.databaseUrl,
+        application_name: "reellingo-api",
+        ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: false } : undefined,
+        connectionTimeoutMillis: 5000,
+      });
+      await pool.query("SELECT 1");
+      // Never alter a hosted database automatically: the owner applies backend/sql/schema.sql themselves.
+      const { unprotected } = await verifyPostgresSchema();
+      if (unprotected.length) {
+        const { logger } = await import("./logger.js");
+        logger.warn({ tables: unprotected }, "Row Level Security is OFF on these tables. Run backend/sql/schema.sql in the Supabase SQL Editor to switch it on.");
+      }
+    } catch (err) {
+      const { logger } = await import("./logger.js");
+      logger.warn({ err: err.message }, "Hosted PostgreSQL (Supabase) unreachable. Falling back to local SQLite database.");
+      await pool?.end().catch(() => {});
+      pool = null;
+      isPostgres = false;
+    }
+  }
+  if (!isPostgres) {
     databaseFile = config.databaseUrl.startsWith("sqlite:///")
       ? resolve(config.databaseUrl.slice("sqlite:///".length))
       : resolve("./local.db");
     mkdirSync(dirname(databaseFile), { recursive: true });
     const SQL = await initSqlJs({ wasmBinary: readFileSync(require.resolve("sql.js/dist/sql-wasm.wasm")) });
     sqlite = existsSync(databaseFile) ? new SQL.Database(readFileSync(databaseFile)) : new SQL.Database();
-  }
-  if (isPostgres) {
-    // Never alter a hosted database automatically: the owner applies backend/sql/schema.sql themselves.
-    const { unprotected } = await verifyPostgresSchema();
-    if (unprotected.length) {
-      const { logger } = await import("./logger.js");
-      logger.warn({ tables: unprotected }, "Row Level Security is OFF on these tables. Run backend/sql/schema.sql in the Supabase SQL Editor to switch it on.");
-    }
-  } else {
     await migrate();
     const { seedPlans } = await import("./plans.js");
     await seedPlans();

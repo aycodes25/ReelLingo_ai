@@ -41,7 +41,9 @@ const openaiServer = createServer((request, response) => {
       const user = payload.messages[1].content;
       let content;
       if (system.includes("Identify the language")) calls.detect += 1;
-      if (system.includes("social video metadata")) content = { title: "Welcome to Lagos", description: "A warm greeting.", hashtags: ["lagos", "#naija"] };
+      if (system.includes("strict bilingual proofreader")) calls.review = (calls.review || 0) + 1;
+      if (system.includes("strict bilingual proofreader")) content = { lines: [{ index: 0, severity: "major", problem: "Wrong word.", fix: "Checked hello" }] };
+      else if (system.includes("social video metadata")) content = { title: "Welcome to Lagos", description: "A warm greeting.", hashtags: ["lagos", "#naija"] };
       else if (system.includes("short social-media clips")) content = { clips: [{ start_index: 0, end_index: 2, title: "The best bit" }, { start_index: 5, end_index: 5, title: "Too short" }] };
       else if (system.includes("Identify the language")) content = { segments: JSON.parse(user).map((item) => ({ index: item.index, language: "yo" })) };
       else content = { segments: JSON.parse(user).map((item) => ({ index: item.index, text: `EN ${item.text}` })) };
@@ -62,6 +64,8 @@ await new Promise((resolve) => openaiServer.listen(0, "127.0.0.1", resolve));
 
 Object.assign(process.env, {
   MOCK_MODE: "false",
+  QUALITY_CHECK: "false", // one test below turns the quality check on
+  AUTO_SPEAKERS: "false", // the tests below use Whisper unless they ask for speakers; one test turns it on
   OPENAI_API_KEY: "test-openai",
   OPENAI_BASE_URL: `http://127.0.0.1:${openaiServer.address().port}/v1`,
   ELEVENLABS_API_KEY: "test-elevenlabs",
@@ -225,6 +229,54 @@ test("multi-speaker videos are diarized and each speaker gets their own voice", 
   assert.deepEqual(job.speakers_json.map((speaker) => speaker.id), ["speaker_0", "speaker_1"]);
   assert.equal(eleven.clones - clonesBefore, 0, "speakers under 4 seconds use distinct stock voices instead of clones");
   assert.equal(new Set(eleven.tts.map((call) => call.voice)).size, 2);
+});
+
+test("speakers are detected automatically (no option needed) and subtitles follow the dubbed voice", async () => {
+  const { config } = await import("../src/config.js");
+  config.autoSpeakers = true;
+  try {
+    const input = await storedVideo("auto-speakers.mp4");
+    eleven.tts = [];
+    const scribeBefore = eleven.scribe;
+    const job = await runJob(await database.createJob({ user_id: "creator", source_language: "yo", target_language: "en", voice_clone: false, input_storage_path: input, options_json: { keep_background: false } }));
+    assert.equal(job.status, "done", job.error_message);
+    assert.equal(eleven.scribe - scribeBefore, 1, "Scribe is used without the creator asking");
+    assert.equal(job.speakers_json.length, 2);
+    const timeline = job.options_json.dub_timeline;
+    assert.ok(timeline.length >= 2, "where each line landed is stored");
+    const srt = await readFile(localPath(job.outputs_json.find((output) => output.format === "srt").path), "utf8");
+    const [, hh, mm, ss, ms] = srt.match(/-->\s*(\d+):(\d+):(\d+),(\d+)/);
+    const firstEnd = Number(hh) * 3600 + Number(mm) * 60 + Number(ss) + Number(ms) / 1000;
+    assert.ok(Math.abs(firstEnd - timeline[0][2]) < 0.06, "the first subtitle ends when the first voice line ends");
+  } finally {
+    config.autoSpeakers = false;
+  }
+});
+
+test("the quality check proofreads the translation, fixes serious errors, listens to the dub and saves a report", async () => {
+  const { config } = await import("../src/config.js");
+  config.autoSpeakers = true;
+  config.qualityCheck = true;
+  try {
+    const input = await storedVideo("quality.mp4");
+    const whisperBefore = calls.transcription;
+    const job = await runJob(await database.createJob({ user_id: "creator", source_language: "yo", target_language: "en", voice_clone: false, input_storage_path: input, options_json: { keep_background: false } }));
+    assert.equal(job.status, "done", job.error_message);
+    assert.equal(calls.transcription - whisperBefore, 1, "a second engine listened to the original audio");
+    assert.ok(calls.review >= 1);
+    const report = job.options_json.quality_report;
+    assert.equal(report.speakers.count, 2);
+    assert.equal(report.translation.errors, 1);
+    assert.equal(report.translation.fixed, 1);
+    assert.equal(job.translated_segments_json[0].text, "Checked hello", "the corrected line was the one dubbed");
+    assert.equal(report.dub.checked, true);
+    assert.equal(report.dub.lines, job.options_json.dub_timeline.length);
+    const { jobOutput } = await import("../src/http.js");
+    assert.equal((await jobOutput(job, { detail: false })).quality_report.translation.fixed, 1);
+  } finally {
+    config.autoSpeakers = false;
+    config.qualityCheck = false;
+  }
 });
 
 test("subtitles-only projects make subtitle files and a captioned copy, with no voice at all", async () => {

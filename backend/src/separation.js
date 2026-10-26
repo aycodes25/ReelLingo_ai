@@ -16,13 +16,14 @@ async function findFile(directory, name) {
   return match ? join(match.parentPath || match.path, match.name) : null;
 }
 
-/** Demucs (open-source, best quality) writes no_vocals.wav: everything except the voices. */
+/** Demucs (open-source, best quality) writes no_vocals.wav (background) and vocals.wav (clean voices). */
 async function separateWithDemucs(mixPath, workdir, signal) {
   const outputDirectory = join(workdir, "demucs");
   await run(config.demucsCommand, ["--two-stems=vocals", ...config.demucsArgs, "-o", outputDirectory, mixPath], { timeoutMs: 60 * 60 * 1000, signal });
   const background = await findFile(outputDirectory, "no_vocals.wav");
+  const vocals = await findFile(outputDirectory, "vocals.wav");
   if (!background) throw new Error("Demucs did not produce a background track.");
-  return background;
+  return { background, vocals };
 }
 
 /** Crude fallback: voices are usually mixed to the centre of a stereo track, so cancelling the centre removes most of them. */
@@ -67,11 +68,19 @@ export async function providerPlan(durationSeconds) {
 export async function separateBackground(mixPath, workdir, durationSeconds, { signal } = {}) {
   const failures = [];
   const { order, note: speedNote } = await providerPlan(durationSeconds);
-  for (const provider of order) {
+    for (const provider of order) {
     try {
-      const background = provider === "demucs" ? await separateWithDemucs(mixPath, workdir, signal) : await separateWithCenterCancel(mixPath, workdir);
-      if (await peakDb(background) <= -45) return { backgroundPath: null, provider, note: "No background music or effects were detected." };
-      return { backgroundPath: background, provider, note: provider === "ffmpeg" ? speedNote : null };
+      let background = null;
+      let vocals = null;
+      if (provider === "demucs") {
+        const separated = await separateWithDemucs(mixPath, workdir, signal);
+        background = separated.background;
+        vocals = separated.vocals;
+      } else {
+        background = await separateWithCenterCancel(mixPath, workdir);
+      }
+      if (await peakDb(background) <= -45) return { backgroundPath: null, vocalsPath: vocals, provider, note: "No background music or effects were detected." };
+      return { backgroundPath: background, vocalsPath: vocals, provider, note: provider === "ffmpeg" ? speedNote : null };
     } catch (error) {
       if (signal?.aborted) throw error;
       failures.push(`${provider}: ${error.message}`);

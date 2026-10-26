@@ -18,3 +18,8 @@ coverage/
 .env.*
 !.env.example
 !.env.local.example
+
+# Developer scratch: local dubbing runs, downloaded speaker model, test videos
+backend/.dev-dub/
+backend/scripts/dev/pretrained_ecapa/
+"video dub/"

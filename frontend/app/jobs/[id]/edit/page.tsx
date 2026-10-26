@@ -131,7 +131,7 @@ export default function EditTranslationPage() {
     if (!media) return;
     media.currentTime = start;
     stopAt.current = end;
-    void media.play();
+    void media.play().catch(() => undefined); // a quick pause or seek can interrupt play(); that is harmless
   }
 
   const crumbs = [{ label: "Dashboard", href: "/dashboard" }, { label: "Projects", href: "/projects" }, { label: job ? projectFileName(job) : `Project #${jobId}`, href: job ? `/jobs/${jobId}` : undefined }, { label: "Edit translation" }];

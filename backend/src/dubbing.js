@@ -1,3 +1,4 @@
+import { availableSeconds } from "./fitlines.js";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -15,7 +16,7 @@ const TRACK_SAMPLE_RATE = 24000;
 const MAX_SEGMENT_SPEEDUP = 1.5;
 const MAX_TOTAL_SPEEDUP = 2.5;
 const SPEAKER_SAMPLE_SECONDS = 150;
-const MIN_CLONE_SECONDS = 4;
+const MIN_CLONE_SECONDS = 4.7; // ElevenLabs requires at least 4.6 seconds of audio to clone
 const OPENAI_VOICES = ["alloy", "onyx", "nova", "echo", "shimmer", "fable"];
 
 let modelLanguagesCache = null;
@@ -97,12 +98,12 @@ export async function createSpeakerSample(sourceAudioPath, segments, outputPath)
   }
   if (!picked.length) throw new Error("No speech intervals were found to create a voice sample.");
   const filters = picked.map((segment, index) => (
-    `[0:a]atrim=start=${Math.max(0, segment.start)}:end=${segment.end},asetpts=PTS-STARTPTS,highpass=f=80,lowpass=f=8000,afftdn[a${index}]`
+    `[0:a]atrim=start=${Math.max(0, segment.start)}:end=${segment.end},asetpts=PTS-STARTPTS,highpass=f=70,afftdn=nf=-25[a${index}]`
   ));
   filters.push(`${picked.map((_, index) => `[a${index}]`).join("")}concat=n=${picked.length}:v=0:a=1[out]`);
   const scriptPath = `${outputPath}.filter.txt`;
   await writeFile(scriptPath, filters.join(";\n"));
-  const encode = ["-map", "[out]", "-ac", "1", "-ar", "44100", "-c:a", "libmp3lame", "-b:a", "128k", outputPath];
+  const encode = ["-map", "[out]", "-ac", "1", "-ar", "44100", "-c:a", "libmp3lame", "-b:a", "192k", outputPath];
   // The filter graph lives in a file to avoid command-line length limits on long videos.
   // ffmpeg 7+ reads it with "-/filter_complex"; older builds (Debian's 5.x in Docker) use "-filter_complex_script".
   try {
@@ -154,7 +155,11 @@ function explainCloneFailure(error) {
 }
 
 export async function synthesizeWithElevenLabs(text, voiceId, languageCode) {
-  const body = { model_id: config.elevenlabsModel, text };
+  const body = {
+    model_id: config.elevenlabsModel,
+    text,
+    voice_settings: { stability: config.voiceStability, similarity_boost: config.voiceSimilarity, style: config.voiceStyle, use_speaker_boost: true },
+  };
   if (languageCode) body.language_code = languageCode;
   const response = await elevenFetch(`/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`, {
     method: "POST",
@@ -231,7 +236,7 @@ export function clipCacheKey(parts) {
  */
 export async function dubSegments({
   segments, sourceAudioPath, sourceSegments = segments, outputPath, targetLanguage, voiceClone, durationSeconds, workdir,
-  savedVoiceId = null, clipCache = null, voiceScope = "job", preferredVoice = null,
+  savedVoiceId = null, clipCache = null, voiceScope = "job", preferredVoice = null, refit = null,
 }) {
   const speakable = segments.map((segment, index) => ({ ...segment, index })).filter((segment) => segment.text?.trim());
   if (!speakable.length) throw new Error("No translated speech is available to dub.");
@@ -315,7 +320,7 @@ export async function dubSegments({
       const needsClips = pending.some((segment) => speakerOf(segment) === speaker);
       if (savedVoiceId && rank === 0) {
         voiceId = savedVoiceId;
-      } else if (voiceClone && needsClips && !cloningBlocked) {
+      } else if (voiceClone && (needsClips || refit) && !cloningBlocked) {
         const speakerSegments = sourceSegments.filter((segment) => speakerOf(segment) === speaker);
         if (seconds < MIN_CLONE_SECONDS && ranked.length > 1) {
           fallbackReason ||= "Some speakers talk too briefly to clone, so they use a standard voice.";
@@ -325,13 +330,15 @@ export async function dubSegments({
             clones.push(voiceId);
             cloned = true;
           } catch (error) {
-            fallbackReason = `Speaker cloning unavailable: ${explainCloneFailure(error)}`;
-            cloningBlocked = true;
+            const reason = explainCloneFailure(error);
+            fallbackReason ||= `Speaker cloning unavailable: ${reason}`;
+            // A problem with one speaker's sample must not stop the others; a plan or credit problem will hit everyone.
+            if (/subscription|plan|quota|credit|permission|unauthori|not allowed|limit/i.test(reason)) cloningBlocked = true;
           }
         }
       }
       voices.set(speaker, voiceId);
-      speakerResults.push({ speaker, seconds: Math.round(seconds * 10) / 10, voice: savedVoiceId && rank === 0 ? "saved" : cloned ? "clone" : "standard" });
+      speakerResults.push({ speaker, seconds: Math.round(seconds * 10) / 10, voice: savedVoiceId && rank === 0 ? "saved" : (cloned || (voiceClone && !needsClips)) ? "clone" : "standard" });
     }
   } else if (provider === "spitch") {
     for (const { speaker, seconds } of ranked) {
@@ -346,6 +353,8 @@ export async function dubSegments({
   }
 
   const produced = [];
+  let timeline = [];
+  const revised = [];
   try {
     const supported = provider === "elevenlabs" ? await modelLanguages() : new Set();
     const languageCode = supported.has(targetLanguage) ? targetLanguage : undefined;
@@ -364,8 +373,39 @@ export async function dubSegments({
       return { index: segment.index, path };
     });
     const pathByIndex = new Map([...cached.entries(), ...fresh.map((clip) => [clip.index, clip.path])]);
-    const clips = speakable.map((segment) => ({ path: pathByIndex.get(segment.index), start: segment.start, end: segment.end }));
-    await layoutDubTrack(clips, durationSeconds, outputPath);
+
+    // Now the real length of every voice line is known: lines that still can't fit are shortened and spoken again.
+    if (refit) {
+      const lengths = await mapWithConcurrency(speakable, 8, async (segment) => (await decodeClip(pathByIndex.get(segment.index))).length / 2 / TRACK_SAMPLE_RATE);
+      const long = [];
+      speakable.forEach((segment, position) => {
+        const room = availableSeconds(segments, segment.index, durationSeconds);
+        if (lengths[position] > room * 1.12 && segment.text.trim().length > 14) {
+          long.push({ index: segment.index, text: segment.text.trim(), maxCharacters: Math.floor(segment.text.trim().length * (room * 1.05) / lengths[position]) });
+        }
+      });
+      const rewrites = long.length ? await refit(long) : new Map();
+      const redo = speakable.filter((segment) => rewrites.has(segment.index));
+      await mapWithConcurrency(redo, Math.max(1, concurrency), async (segment) => {
+        const oldKey = keyFor(segment);
+        segment.text = rewrites.get(segment.index);
+        const voice = voices.get(speakerOf(segment)) || (provider === "openai" ? "alloy" : provider === "spitch" ? spitchVoiceFor(targetLanguage, 0, preferredVoice) : config.elevenlabsFallbackVoiceId);
+        const audio = provider === "spitch"
+          ? await synthesizeWithSpitch(segment.text, voice, targetLanguage)
+          : provider === "elevenlabs"
+            ? await synthesizeWithElevenLabs(segment.text, voice, languageCode)
+            : await synthesizeWithOpenAI(segment.text, targetLanguage, voice);
+        const path = join(clipsDirectory, `clip-${String(segment.index).padStart(4, "0")}-b.mp3`);
+        await writeFile(path, audio);
+        const old = produced.findIndex((item) => item.key === oldKey);
+        if (old >= 0) produced.splice(old, 1);
+        produced.push({ key: keyFor(segment), path });
+        pathByIndex.set(segment.index, path);
+        revised.push({ index: segment.index, text: segment.text });
+      });
+    }
+    const clips = speakable.map((segment) => ({ index: segment.index, path: pathByIndex.get(segment.index), start: segment.start, end: segment.end }));
+    timeline = (await layoutDubTimeline(clips, durationSeconds, outputPath)).placements;
   } finally {
     for (const cloneId of clones) await deleteVoice(cloneId);
   }
@@ -375,6 +415,8 @@ export async function dubSegments({
     provider,
     fallbackReason,
     notice,
+    timeline,
+    revised,
     newClips: produced,
     reusedClips: cached.size,
     speakers: speakerResults,
@@ -386,8 +428,17 @@ export async function dubSegments({
  * Synthesizes each translated segment separately and lays the clips on the video timeline,
  * so the dub stays in sync and no sentence is cut off at the end of the video.
  */
+// Voice engines pad every line with a little silence; cutting it off gives back time that would otherwise be paid for by speeding up.
+const TRIM_SILENCE = "silenceremove=start_periods=1:start_threshold=-48dB:start_silence=0.04,areverse,silenceremove=start_periods=1:start_threshold=-48dB:start_silence=0.06,areverse";
+
 async function decodeClip(path, tempo = 1) {
-  const filters = [];
+  const trimmed = await decodeWith(path, tempo, true).catch(() => null);
+  // A clip that is all silence (or too short to measure) is used as it is.
+  return trimmed && trimmed.length > TRACK_SAMPLE_RATE * 0.06 * 2 ? trimmed : decodeWith(path, tempo, false);
+}
+
+async function decodeWith(path, tempo, trim) {
+  const filters = trim ? [TRIM_SILENCE] : [];
   let remaining = tempo;
   while (remaining > 2) {
     filters.push("atempo=2");
@@ -400,21 +451,61 @@ async function decodeClip(path, tempo = 1) {
   return runFfmpeg(args, true);
 }
 
-function plan(clips, durations, totalDuration, globalSpeed) {
+/**
+ * Decides where each line starts and how much it is adjusted in tempo.
+ * Lines never overlap: each starts at its original timestamp or as soon as the previous line finishes.
+ * When a line fits comfortably, it plays at its natural speed (1.0x).
+ * When speech would run past the next speaker's start time, it is gently compressed up to MAX_SEGMENT_SPEEDUP.
+ */
+function plan(clips, durations, totalDuration, globalSpeed = 1) {
+  const maxSegmentSpeed = config.dubMaxSpeed ? Math.min(Math.max(config.dubMaxSpeed, 1.2), MAX_SEGMENT_SPEEDUP) : MAX_SEGMENT_SPEEDUP;
   let cursor = 0;
+
   const placements = clips.map((clip, index) => {
-    const start = Math.max(clip.start, cursor);
-    const nextStart = index + 1 < clips.length ? Math.max(clips[index + 1].start, start) : totalDuration;
+    const isLast = index + 1 >= clips.length;
+    const origStart = clip.start;
+    const origEnd = clip.end;
+    const nextStart = isLast ? totalDuration : Math.max(clips[index + 1].start, origStart);
+
+    // Never start before the previous clip finishes.
+    const start = Math.max(origStart, cursor);
+
+    // The available slot before the next speaker or end of video
     const slot = Math.max(nextStart - start, 0.25);
-    const speed = Math.min(Math.max(durations[index] / slot, 1), MAX_SEGMENT_SPEEDUP) * globalSpeed;
-    cursor = start + durations[index] / speed;
+    const naturalDur = durations[index];
+
+    // If it fits naturally in its own segment or before next speaker, keep speed at 1.0.
+    // If it overflows the slot, compress it up to maxSegmentSpeed.
+    const speed = Math.min(Math.max(naturalDur / slot, 1), maxSegmentSpeed) * globalSpeed;
+    const playDuration = naturalDur / speed;
+    cursor = start + playDuration;
+
     return { start, speed };
   });
+
   return { placements, end: cursor };
+}
+
+/** The subtitle lines timed to the dub: each line shows exactly while its voice is heard. */
+export function retimeToDub(segments, timeline) {
+  if (!timeline?.length) return segments;
+  const byIndex = new Map(timeline.map((line) => [Number(Array.isArray(line) ? line[0] : line.index), Array.isArray(line) ? { start: line[1], end: line[2] } : line]));
+  return segments.map((segment, index) => {
+    const placed = byIndex.get(index);
+    return placed ? { ...segment, start: placed.start, end: Math.max(placed.end, placed.start + 0.3) } : segment;
+  });
 }
 
 /** Places each clip at its segment start on a silent track exactly `totalDuration` seconds long. */
 export async function layoutDubTrack(clips, totalDuration, outputPath) {
+  return (await layoutDubTimeline(clips, totalDuration, outputPath)).path;
+}
+
+/**
+ * Like layoutDubTrack, but also reports where each line really landed: its start and end on the finished track and how much it
+ * was sped up. Subtitles are timed from this, so they always match what is heard.
+ */
+export async function layoutDubTimeline(clips, totalDuration, outputPath) {
   const ordered = [...clips].sort((first, second) => first.start - second.start);
   const raw = await Promise.all(ordered.map((clip) => decodeClip(clip.path)));
   const durations = raw.map((buffer) => buffer.length / 2 / TRACK_SAMPLE_RATE);
@@ -453,5 +544,9 @@ export async function layoutDubTrack(clips, totalDuration, outputPath) {
   header.write("data", 36);
   header.writeUInt32LE(track.length, 40);
   await writeFile(outputPath, Buffer.concat([header, track]));
-  return outputPath;
+  const placed = ordered.map((clip, index) => {
+    const { start, speed } = layout.placements[index];
+    return { index: clip.index, start, end: start + durations[index] / speed, speed, naturalSeconds: durations[index], slotStart: clip.start, slotEnd: clip.end };
+  });
+  return { path: outputPath, placements: placed, globalSpeed };
 }

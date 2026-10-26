@@ -37,7 +37,7 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(function Vid
       const video = videoRef.current;
       if (!video) return;
       video.currentTime = seconds;
-      void video.play();
+      void video.play().catch(() => undefined);
     },
   }));
 
@@ -66,7 +66,7 @@ const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(function Vid
   function toggle() {
     const video = videoRef.current;
     if (!video) return;
-    if (video.paused) void video.play();
+    if (video.paused) void video.play().catch(() => undefined);
     else video.pause();
   }
 

@@ -2,7 +2,10 @@ import dotenv from "dotenv";
 import { resolve } from "node:path";
 
 // Tests never read backend/.env, so they can't touch your real database, storage or paid APIs.
-if (!process.env.NODE_TEST_CONTEXT) dotenv.config();
+if (!process.env.NODE_TEST_CONTEXT) {
+  dotenv.config();
+  dotenv.config({ path: resolve(import.meta.dirname, "../.env") });
+}
 
 const requestedMockMode = process.env.MOCK_MODE?.toLowerCase() !== "false";
 const openaiApiKey = process.env.OPENAI_API_KEY || "";
@@ -53,6 +56,23 @@ export const config = {
   transcriptionProvider: process.env.TRANSCRIPTION_PROVIDER || "openai",
   // Background separation: "auto" | "demucs" | "elevenlabs" | "ffmpeg" | "none".
   separationProvider: process.env.SEPARATION_PROVIDER || "auto",
+  // Work out who is speaking (and give each person their own voice) in every video, not only when the creator asks for it.
+  autoSpeakers: process.env.AUTO_SPEAKERS !== "false",
+  // How much a dubbed line may be sped up to fit the time the original line took (1 = never). Natural speech stays under about 1.25.
+  dubMaxSpeed: number("DUB_MAX_SPEED", 1.25),
+  // How far behind the picture a line may fall (seconds) while a run of quick lines catches up; it resets in every pause.
+  dubMaxDrift: number("DUB_MAX_DRIFT", 2.5),
+  // Shorten translated lines that would be too long to say in the time available (instead of speeding the voice up).
+  fitLines: process.env.FIT_LINES !== "false",
+  // ElevenLabs voice settings: higher similarity = closer to the real speaker; lower stability = more expressive.
+  // After translating, proofread every line (and compare with a second speech-to-text engine); after dubbing, listen to the dub
+  // and check it says what it should. Costs a few cents per video.
+  qualityCheck: process.env.QUALITY_CHECK !== "false",
+  // Correct serious translation errors the proofreader is sure about (otherwise they are only reported).
+  qualityAutoFix: process.env.QUALITY_AUTO_FIX !== "false",
+  voiceSimilarity: number("VOICE_SIMILARITY", 0.9),
+  voiceStability: number("VOICE_STABILITY", 0.45),
+  voiceStyle: number("VOICE_STYLE", 0),
   // If nobody is speaking and the sound is almost silent, there's no music to keep: skip the slow separation altogether.
   skipQuietBackground: process.env.SKIP_QUIET_BACKGROUND !== "false",
   quietBackgroundDb: number("QUIET_BACKGROUND_DB", -40),
